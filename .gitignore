@@ -1,0 +1,27 @@
+# === Build artifacts (regenerate via the Docker build) ===
+mkxp-web/deps/
+mkxp-web/CMakeFiles/
+mkxp-web/CMakeCache.txt
+mkxp-web/Makefile
+mkxp-web/cmake_install.cmake
+mkxp-web/CTestTestfile.cmake
+mkxp-web/*.o
+mkxp-web/*.a
+mkxp-web/mkxp.wasm
+mkxp-web/mkxp.js
+mkxp-web/mkxp.html
+mkxp-web/mkxp.data
+mkxp-web/mkxp.wasm.map
+
+# === Compiled engine output — produced by the build / CI, not committed ===
+mkxp-web/build/mkxp.wasm
+mkxp-web/build/mkxp.js
+
+# === YOUR game content lives here — copyrighted, do NOT commit to the engine repo ===
+mkxp-web/build/gameasync/
+mkxp-web/build/preload/
+scripts_src/
+
+# === Logs & OS cruft ===
+*.log
+.DS_Store

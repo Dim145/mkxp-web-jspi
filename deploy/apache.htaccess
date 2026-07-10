@@ -1,0 +1,72 @@
+# ─── RGSS-Web (mkxp-web-jspi) — production Apache config ──────────────────────────
+# Drop this file in the web root that serves the game (next to index.html).
+# It enables Brotli/gzip compression, correct WASM MIME (so the browser can use
+# WebAssembly.instantiateStreaming), and long-lived caching of immutable assets.
+# Every block is guarded by <IfModule>, so a missing module is skipped, not fatal.
+
+# --- MIME types --------------------------------------------------------------
+<IfModule mod_mime.c>
+  AddType application/wasm            .wasm
+  AddType application/javascript      .js
+  AddType application/json            .json
+  AddType application/octet-stream    .dat .rxdata
+  # .br is a compressed variant, not its own type — see the rewrite block below.
+  AddEncoding br                      .br
+</IfModule>
+
+# --- Serve pre-compressed .br if present (best: zero per-request CPU) ---------
+# Pre-generate once after each rebuild, e.g.:
+#   brotli -q 11 -kf mkxp.wasm mkxp.js gameasync/mapping.js js/*.js
+# The rewrite hands back name.ext.br when the client sent "Accept-Encoding: br".
+<IfModule mod_rewrite.c>
+  RewriteEngine On
+  RewriteCond %{HTTP:Accept-Encoding} br
+  RewriteCond %{REQUEST_FILENAME}\.br -f
+  RewriteRule ^(.*)$ $1.br [L]
+</IfModule>
+<IfModule mod_headers.c>
+  # A rewritten *.br response must advertise the real type + the br encoding.
+  <FilesMatch "\.wasm\.br$">
+    Header set Content-Type "application/wasm"
+    Header set Content-Encoding "br"
+    Header append Vary "Accept-Encoding"
+  </FilesMatch>
+  <FilesMatch "\.js\.br$">
+    Header set Content-Type "application/javascript"
+    Header set Content-Encoding "br"
+    Header append Vary "Accept-Encoding"
+  </FilesMatch>
+  <FilesMatch "\.json\.br$">
+    Header set Content-Type "application/json"
+    Header set Content-Encoding "br"
+    Header append Vary "Accept-Encoding"
+  </FilesMatch>
+</IfModule>
+
+# --- Dynamic compression fallback (when no pre-compressed .br exists) ---------
+# NOTE: dynamically Brotli-compressing the ~4 MB wasm on every request is CPU
+# heavy — prefer the pre-compressed .br above for mkxp.wasm. Text assets are cheap.
+<IfModule mod_brotli.c>
+  AddOutputFilterByType BROTLI_COMPRESS application/javascript application/json text/html text/css image/svg+xml text/plain application/wasm
+</IfModule>
+<IfModule mod_deflate.c>
+  AddOutputFilterByType DEFLATE application/javascript application/json text/html text/css image/svg+xml text/plain application/wasm
+</IfModule>
+
+# --- Cache-Control -----------------------------------------------------------
+<IfModule mod_headers.c>
+  # Content-addressed / versioned assets (loaded with ?v= or ?h=, plus the wasm
+  # engine and all game media) never change under a given URL -> cache hard.
+  <FilesMatch "\.(wasm|png|jpg|jpeg|gif|webp|ogg|mp3|wav|ttf|otf|dat|rxdata)$">
+    Header set Cache-Control "public, max-age=31536000, immutable"
+  </FilesMatch>
+  # The engine JS glue is loaded with ?v=BUILD_VER, so it is safe to cache hard too.
+  <FilesMatch "^mkxp\.js$">
+    Header set Cache-Control "public, max-age=31536000, immutable"
+  </FilesMatch>
+  # The entry shell, asset map and worker script change on redeploy WITHOUT a
+  # version string, so they must always revalidate to pick up new builds.
+  <FilesMatch "^(index\.html|mapping\.js|sw\.js|drive\.js|dpad\.js)$">
+    Header set Cache-Control "no-cache, must-revalidate"
+  </FilesMatch>
+</IfModule>

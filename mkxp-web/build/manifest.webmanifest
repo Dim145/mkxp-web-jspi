@@ -1,0 +1,7 @@
+{
+    "name": "RGSS-Web",
+    "short_name": "RGSS-Web",
+    "description": "An RPG Maker XP (RGSS1) game running in the browser",
+    "display": "fullscreen",
+    "scope": "/"
+}

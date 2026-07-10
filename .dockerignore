@@ -1,0 +1,22 @@
+# Build context for the DEPLOY image (deploy/Dockerfile, context = repo root).
+# Whitelist only what the image copies: the built game + the deploy config.
+# Everything else (mkxp-web/deps ~GBs, mkxp-web/src, .git, scripts_src, ...) is
+# excluded so the context stays ~= the 395MB game dir.
+*
+!mkxp-web
+!deploy
+
+# under mkxp-web, keep ONLY the built game
+mkxp-web/*
+!mkxp-web/build
+
+# non-served / dev-only bits inside build/
+mkxp-web/build/.claude
+mkxp-web/build/.htaccess
+mkxp-web/build/**/*.bak
+mkxp-web/build/**/*.orig
+
+# never send VCS / OS cruft even if a rule above would include it
+.git
+**/.DS_Store
+*.log

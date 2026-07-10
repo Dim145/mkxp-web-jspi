@@ -1,0 +1,31 @@
+*.o
+*.pro.*
+*.bak
+*.vert.xxd
+*.frag.xxd
+*.ttf.xxd
+*.png.xxd
+*.h.xxd
+
+Makefile
+
+mkxp
+mkxp.wasm
+mkxp.html
+mkxp.js
+xxd+
+
+# WEB PORT: was `/build` (upstream ignored the whole build/). We hand-edit files in
+# build/ (index.html, js/drive.js, gameasync/rgss.rb, mapping.js, bitmap-map.js) so
+# build/ IS tracked here; the huge/regenerable parts (gameasync Graphics/Audio/Data,
+# deps) are excluded by the repo-root .gitignore instead.
+/deps
+/CMakeFiles
+
+CMakeCache.txt
+cmake_install.cmake
+
+# Codeblocks
+mkxp.layout
+mkxp.cbp
+

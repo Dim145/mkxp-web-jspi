@@ -1,0 +1,43 @@
+RGSS-Web (mkxp-web-jspi)
+========================
+
+This project is a fork of mkxp-web by pulsejet
+(https://github.com/pulsejet/mkxp-web), which is itself based on mkxp by
+Ancurio (https://github.com/Ancurio/mkxp). The combined work is licensed under
+the GNU General Public License, version 2 or later (see COPYING).
+
+Copyright / attribution
+-----------------------
+  * mkxp        (c) 2013-2023 Jonas Kulla (Ancurio) and contributors  — GPL-2.0-or-later
+  * mkxp-web    (c) 2021-2023 pulsejet and contributors               — GPL-2.0-or-later
+  * this fork   (c) 2026 <your name here> and contributors            — GPL-2.0-or-later
+                (see CHANGES.md for the list of modifications, per GPLv2 §2a)
+
+Bundled / fetched third-party components (each under its own license; all are
+compatible with GPL-2.0-or-later):
+  * mruby                          MIT           (deps/mruby/, fetched at build)
+  * SDL2 / SDL2_image / SDL2_ttf   zlib
+  * PhysicsFS (physfs)             zlib
+  * pixman                         MIT
+  * libsigc++ 2.x                  LGPL-2.1
+  * Emscripten                     MIT / University of Illinois/NCSA
+  * mruby-onig-regexp              MIT           (bundles Onigmo: BSD)
+  * mruby-marshal                  MIT
+  * mruby-time-strftime            MIT
+  * Liberation fonts               SIL OFL 1.1   (mkxp-web/assets/liberation.ttf;
+                                                  text: mkxp-web/assets/LICENSE.liberation)
+
+Retain each component's own license/copyright notices when redistributing.
+
+What this repository does NOT contain
+--------------------------------------
+No RPG Maker XP RTP assets, no Enterbrain RGSS runtime DLLs, no proprietary
+fonts, and no game content. mkxp is an independent, open-source reimplementation
+of the RGSS interface — it uses none of Enterbrain's code.
+
+"Bring your own game": you supply your own RMXP game files (see
+docs/BRING-YOUR-OWN-GAME.md). You are solely responsible for the licensing and
+rights of any game content you add. In particular, RPG Maker XP RTP assets are
+proprietary (Enterbrain EULA) and Pokémon Essentials-based fan-games carry both
+CC BY-NC-SA licensing and Nintendo/Creatures/GAME FREAK intellectual property —
+do not redistribute such content through this engine.

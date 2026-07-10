@@ -1,0 +1,41 @@
+name: build-engine
+
+# Builds the WebAssembly engine (mkxp.wasm + mkxp.js) in the pinned Docker toolchain
+# and publishes it as an artifact. Runs on native amd64 runners (faster than the
+# emulated linux/amd64 build on Apple Silicon). The compiled engine is intentionally
+# NOT committed to the repo (see .gitignore) — download it from here instead.
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build the builder image (pinned emsdk 3.1.61)
+        run: docker build -t mkxp-web-jspi .
+
+      - name: Compile deps + engine (JSPI)
+        run: |
+          docker run --rm \
+            -v "${{ github.workspace }}/mkxp-web:/src/mkxp-web" \
+            -v "${{ github.workspace }}/build-mkxp.sh:/build-mkxp.sh" \
+            mkxp-web-jspi /build-mkxp.sh
+
+      - name: Show engine size
+        run: ls -la mkxp-web/build/mkxp.wasm mkxp-web/build/mkxp.js
+
+      - name: Upload engine artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: mkxp-engine-wasm
+          path: |
+            mkxp-web/build/mkxp.wasm
+            mkxp-web/build/mkxp.js
+          if-no-files-found: error

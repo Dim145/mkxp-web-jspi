@@ -1,0 +1,524 @@
+<!doctype html>
+<html lang="en-us">
+  <head>
+    <meta charset="utf-8">
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+    <script>
+      // WEB PORT: register the Service Worker (sw.js) so repeat visits load the WASM
+      // engine + already-seen assets from Cache Storage (near-instant reload + offline).
+      // Registered on 'load' so it never competes with the first-visit asset download.
+      if ('serviceWorker' in navigator) {
+        window.addEventListener('load', function () {
+          navigator.serviceWorker.register('sw.js').then(function (reg) {
+            console.log('[sw] registered, scope=' + reg.scope);
+          }).catch(function (err) {
+            console.warn('[sw] registration failed: ' + err);
+          });
+        });
+      }
+    </script>
+    <script>
+      // WEB PORT: the game loop is driven by emscripten_sleep, which resumes via
+      // setTimeout. Chrome throttles setTimeout to ~1 call/second in backgrounded
+      // or hidden tabs, which would slow the game to a crawl whenever it loses
+      // focus (and makes it untestable in a headless preview). Dedicated Web
+      // Worker timers are NOT subject to that throttling, so we route setTimeout
+      // through a worker (the well-known "HackTimer" technique). Installed before
+      // any other script so emscripten's safeSetTimeout picks up the override.
+      (function installUnthrottledTimers(){
+        try {
+          var src =
+            "var t={};onmessage=function(e){var d=e.data;" +
+            "if(d.c==='s'){t[d.i]=setTimeout(function(){delete t[d.i];postMessage(d.i);},d.m);}" +
+            "else if(d.c==='x'){if(t[d.i]){clearTimeout(t[d.i]);delete t[d.i];}}};";
+          var w = new Worker(URL.createObjectURL(new Blob([src], {type:'application/javascript'})));
+          // Worker ids start far above any native setTimeout id so clearTimeout
+          // can dispatch on the id value without cancelling the wrong timer.
+          var cbs = Object.create(null), nid = 0x40000000;
+          w.onmessage = function(e){
+            var id = e.data, cb = cbs[id];
+            if (cb){ delete cbs[id]; try { cb(); } catch(err){ console.error(err); } }
+          };
+          var oST = window.setTimeout.bind(window), oCT = window.clearTimeout.bind(window);
+
+          // MessageChannel fast path: nested setTimeout(0/1) is clamped to ~4ms
+          // by browsers, wasting ~3-4ms EVERY frame. A MessageChannel macrotask
+          // fires in ~0.05-0.3ms and still yields to the event loop (input, paint).
+          // Used for the per-frame yields (ms<=1) when the tab is visible.
+          var mcQueue = [];
+          var mc = new MessageChannel();
+          mc.port1.onmessage = function(){
+            var f = mcQueue.shift();
+            if (f){ try { f(); } catch(err){ console.error(err); } }
+          };
+
+          window.setTimeout = function(fn, ms){
+            if (typeof fn !== 'function') return oST(fn, ms);   // string-eval form: leave alone
+            ms = ms|0;
+            if (!document.hidden){
+              // Visible tab: sub-ms yields via MessageChannel, rest via native.
+              if (ms <= 1){ mcQueue.push(fn); mc.port2.postMessage(0); return -1; }
+              return oST(fn, ms);
+            }
+            // Hidden tab: worker timers beat background throttling.
+            var id = nid++; cbs[id] = fn;
+            w.postMessage({c:'s', i:id, m: ms});
+            return id;
+          };
+          window.clearTimeout = function(id){
+            if (cbs[id] != null){ delete cbs[id]; w.postMessage({c:'x', i:id}); }
+            else if (id !== -1) { oCT(id); }
+          };
+        } catch(err){ /* timer routing unavailable; native timers still work */ }
+      })();
+    </script>
+    <link rel="manifest" href="manifest.webmanifest">
+    <meta name="viewport" content="width=device-width, initial-scale=1, minimum-scale=1, maximum-scale=1, user-scalable=no">
+    <script src="js/localforage.min.js"></script>
+    <script src="js/drive.js"></script>
+    <script src="js/dpad.js"></script>
+    <script src="gameasync/mapping.js"></script>
+    <!-- Frame-independent BGM player (needs getMappingKey from drive.js + mapping). Optional:
+         define window.BGM_LOOP_TABLE before this for intro->loop points. See js/webbgm.js. -->
+    <script src="js/webbgm.js"></script>
+
+    <title>MKXP</title>
+    <style>
+    	body {
+    	    margin: 0;
+    	    padding: 0;
+    	    background-color: black;
+    	    height: 100vh
+    	}
+        #main {
+            height: 100%;
+            width: 100%;
+        }
+
+        #canvas {
+      	    padding: 0;
+      	    margin: 0 auto;
+      	    display: block;
+      	    border: 0px none;
+      	    background-color: black;
+            height: 100%;
+            max-height: 100vh;
+            max-width: 100vw;
+        }
+
+        #spinner {
+            position: fixed;
+            bottom: 40px;
+            left: 20px;
+            opacity: 0.5;
+        }
+        .spinner {
+            height: 25px;
+            width: 25px;
+            margin: 0px auto;
+            -webkit-animation: rotation .8s linear infinite;
+            -moz-animation: rotation .8s linear infinite;
+            -o-animation: rotation .8s linear infinite;
+            animation: rotation 0.8s linear infinite;
+            border-left: 10px solid white;
+            border-right: 10px solid white;
+            border-bottom: 10px solid white;
+            border-top: 10px solid transparent;
+            border-radius: 100%;
+            background-color: transparent;
+        }
+
+        @-webkit-keyframes rotation {
+            from {-webkit-transform: rotate(0deg);}
+            to {-webkit-transform: rotate(360deg);}
+        }
+        @-moz-keyframes rotation {
+            from {-moz-transform: rotate(0deg);}
+            to {-moz-transform: rotate(360deg);}
+        }
+        @-o-keyframes rotation {
+            from {-o-transform: rotate(0deg);}
+            to {-o-transform: rotate(360deg);}
+        }
+        @keyframes rotation {
+            from {transform: rotate(0deg);}
+            to {transform: rotate(360deg);}
+        }
+
+        #fullscreen {
+            position: fixed;
+            bottom: 10px;
+            right: 10px;
+            opacity: 0.5;
+            cursor: pointer;
+        }
+        #fullscreen:hover {
+            opacity: 1;
+        }
+        #fullscreen > svg {
+            height: 20px;
+            width: 20px;
+        }
+
+        #progress {
+            background-color: white;
+            opacity: 0.6;
+            position: fixed;
+            bottom: 0; left: 0;
+            color: black;
+            padding: 3px 10px;
+            border-top-right-radius: 5px;
+        }
+
+        #dpad, #apad {
+            position: fixed;
+            bottom: 0; left: 0;
+            height: 30vh; max-height: 30vw;
+            width: 30vh; max-width: 30vw;
+            transform: translate(55%, -5%);
+        }
+
+        #apad {
+            right: 0; left: unset;
+            transform: unset;
+            width: 15vh; max-width: 15vw;
+        }
+
+        #dpad *, #apad * {
+            position: absolute;
+            height: 15vh; max-height: 15vw;
+            width: 15vh; max-width: 15vw;
+            background-color: gray;
+            opacity: 0.3;
+        }
+
+        #apad * {
+            border-radius: 50%;
+        }
+
+        #d-up { transform: translateY(-100%); }
+        #d-left { transform: translateX(-100%); }
+        #d-down { transform: translateY(100%); }
+        #d-right { transform: translateX(100%); }
+        #ap-b { transform: translate(-130%, 90%); }
+        #ap-c { transform: translate(-15%, -25%); }
+        #ap-a, #ap-ka {
+            height: 7vh; max-height: 7vw;
+            width: 7vh; max-width: 7vw;
+            top: 50%;
+            transform: translate(60%, -30%);
+        }
+        #ap-ka {
+            transform: translate(-20%, 70%);
+        }
+    </style>
+  </head>
+  <body>
+    <div id="main">
+        <div style="overflow:visible;" id="spinner">
+            <div class="spinner"></div>
+        </div>
+        <div id="progress">Loading ...</div>
+
+        <canvas class="emscripten" id="canvas" oncontextmenu="event.preventDefault()" tabindex=-1 width="640" height="480"></canvas>
+
+        <div id="dpad">
+            <div id="d-up"></div>
+            <div id="d-right"></div>
+            <div id="d-down"></div>
+            <div id="d-left"></div>
+            <div id="d-pl"></div>
+        </div>
+
+        <div id="apad">
+            <div id="ap-c"></div>
+            <div id="ap-b"></div>
+            <div id="ap-a"></div>
+            <div id="ap-ka"></div>
+        </div>
+    </div>
+
+    <div onclick="fullscreen()" id="fullscreen">
+        <svg version="1.1" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" x="0px" y="0px" viewBox="0 0 1000 1000" enable-background="new 0 0 1000 1000" xml:space="preserve">
+        <g>
+            <path fill="white" d="M947.4,9.8H707.6c-23.6,0-42.7,19.2-42.7,42.8l98.5,98.8L644.5,270.3c-11.9,11.9-17.9,27.5-17.9,43.1s6,31.2,17.9,43.1c23.8,23.8,62.4,23.8,86.3,0l118.7-118.7l97.9,98.3c23.6,0,42.6-19.2,42.6-42.8V52.5C990,29,971,9.8,947.4,9.8L947.4,9.8z"/>
+            <path fill="white" d="M947.2,664.7l-100.4,100l-121-121c-23.9-23.9-62.4-23.9-86.3,0c-23.8,23.8-23.8,62.4,0,86.2l121,120.9l-96.7,96.4c0,23.6,19.2,42.6,42.8,42.6h240.7c23.6,0,42.8-19,42.8-42.6V707.4C990,683.7,970.8,664.7,947.2,664.7L947.2,664.7z"/>
+            <path fill="white" d="M238.1,150.9L336.4,53c0-23.6-19.3-42.6-42.8-42.6H52.9c-23.6,0-42.8,19-42.8,42.6v239.7c0,23.6,19.2,42.7,42.8,42.7l98.9-98.4l122.1,122c11.9,12,27.5,17.9,43,17.9c15.7,0,31.2-6,43.2-17.9c23.7-23.7,23.7-62.4,0-86.1L238.1,150.9L238.1,150.9z"/>
+            <path fill="white" d="M312.1,602.7L151.5,763.3L52.7,664C29.2,664,10,683.2,10,706.8v240.7c0,23.6,19.2,42.8,42.7,42.8h239.8c23.5,0,42.6-19.2,42.6-42.8l-97.4-97.9l160.7-160.7c23.9-23.9,23.9-62.4,0-86.3C374.6,578.9,336,578.9,312.1,602.7L312.1,602.7z"/>
+        </g>
+        </svg>
+    </div>
+
+    <script type='text/javascript'>
+        // Per-game settings (import-game.sh sets these, or edit by hand):
+        //   namespace = IndexedDB key prefix for this game's savefiles (keep unique
+        //               per game so two games on one domain don't collide)
+        //   wTitle    = browser tab title
+        var namespace = 'mygame';
+        var wTitle = 'RGSS-Web';
+        document.title = wTitle;
+
+        // Cache-buster for the engine binary: mkxp.wasm / mkxp.js have no hash in
+        // their URL, so set BUILD_VER to your build id on every engine rebuild to
+        // force clients (and the Service Worker) to refetch the new binary.
+        var BUILD_VER = 'dev';
+        var Module = {
+            locateFile: function(path){ return (path === 'mkxp.wasm') ? ('mkxp.wasm?v=' + BUILD_VER) : path; },
+            preRun: [createDummies, restoreSaves],
+            postRun: [preloadInit, installSavePersistHook],
+            noAudioDecoding: true,
+            print: (function() {
+                return function(text) {
+                    console.log(text);
+                };
+            })(),
+            printErr: function(text) {
+                if (arguments.length > 1) text = Array.prototype.slice.call(arguments).join(' ');
+                console.error(text);
+            },
+            canvas: (function() {
+                var canvas = document.getElementById('canvas');
+                canvas.addEventListener("webglcontextlost", function(e) {
+                    // Suppress the alert when WE deliberately drop the context on page teardown
+                    // (see the pagehide handler below) -- that loss is expected, not a GPU crash.
+                    if (window.__tearingDown) { e.preventDefault(); return; }
+                    alert('WebGL context lost. You will need to reload the page.');
+                    e.preventDefault();
+                }, false);
+
+                return canvas;
+            })(),
+            setStatus: function(text) {}
+        };
+
+        // WEB PORT: the in-game save writes /game/*.rxdata into the in-memory FS,
+        // but nothing persisted it, so every save vanished on reload (the user's
+        // "save fail"). Wrap FS.close so that whenever a savefile (any .rxdata
+        // outside the read-only /game/Data/ assets) is closed, we push it to
+        // localforage via saveFile(). loadFiles() (postRun) restores it on the
+        // next boot, which is what makes "Continue" appear on the title screen.
+        function installSavePersistHook() {
+            try {
+                if (window.__savePersistHook || typeof FS === 'undefined') return;
+                var origClose = FS.close.bind(FS);
+                FS.close = function(stream) {
+                    var path = null;
+                    try { path = stream && (stream.path || (stream.node && FS.getPath(stream.node))); } catch (e) {}
+                    var ret = origClose(stream);
+                    try {
+                        if (path && /\.rxdata$/i.test(path) &&
+                            path.indexOf('/game/') === 0 && path.indexOf('/game/Data/') !== 0) {
+                            var filename = path.slice('/game/'.length);
+                            if (window.saveFile) window.saveFile(filename, true);
+                        }
+                    } catch (e) {}
+                    return ret;
+                };
+                window.__savePersistHook = true;
+            } catch (e) { console.error('save persist hook failed', e); }
+        }
+
+        // WEB PORT: gate engine startup on the savefile restore so mruby's title code
+        // cannot read safeExists?(Game.rxdata) before the IndexedDB restore lands in
+        // MEMFS (this was the "save lost after (hard) reload" race). addRunDependency/
+        // removeRunDependency are exported (EXPORTED_RUNTIME_METHODS); run() won't call
+        // main() until the dependency is removed. A 3s timeout guards a hung/rejected
+        // localforage so boot never deadlocks. Runs in preRun AFTER createDummies (so
+        // /game exists). Falls back to a plain (ungated) restore if the exports are absent.
+        function restoreSaves() {
+            var add = (typeof Module.addRunDependency === 'function') ? Module.addRunDependency : null;
+            var rem = (typeof Module.removeRunDependency === 'function') ? Module.removeRunDependency : null;
+            if (!add || !rem) { try { loadFiles(); } catch (e) { console.error(e); } return; }
+            add('restore-saves');
+            var done = false;
+            var finish = function() { if (done) return; done = true; try { rem('restore-saves'); } catch (e) {} };
+            setTimeout(finish, 3000);
+            try { Promise.resolve(loadFiles()).then(finish, finish); } catch (e) { console.error(e); finish(); }
+        }
+
+        // WEB PORT: force-persist the current save just before the tab is torn down
+        // (hard-refresh / close) so the last save's un-awaited IndexedDB write is not
+        // lost. Idempotent + best-effort.
+        (function() {
+            var flush = function() {
+                try {
+                    if (window.saveFile && typeof FS !== 'undefined' &&
+                        FS.analyzePath('/game/Game.rxdata').exists) {
+                        window.saveFile('Game.rxdata', true);
+                    }
+                } catch (e) {}
+            };
+            window.addEventListener('pagehide', flush);
+            document.addEventListener('visibilitychange', function() {
+                if (document.visibilityState === 'hidden') flush();
+            });
+
+            // WebGL textures live in the browser's GPU process, which reclaims them
+            // ASYNCHRONOUSLY after navigation -- so a fresh reload can allocate its new heap +
+            // GL context before the old context's VRAM is freed, and repeated reloads can stack
+            // until OOM. Explicitly dropping the context on pagehide/beforeunload forces the GPU
+            // process to release everything immediately. Best-effort; skips the back/forward
+            // cache (persisted=true), where the page may be restored intact.
+            var teardownGPU = function(e) {
+                if (e && e.persisted) return;
+                try {
+                    window.__tearingDown = true;
+                    var cv = document.getElementById('canvas');
+                    var gl = cv && (cv.getContext('webgl2') || cv.getContext('webgl'));
+                    var ext = gl && gl.getExtension('WEBGL_lose_context');
+                    if (ext) ext.loseContext();
+                } catch (e2) {}
+            };
+            window.addEventListener('pagehide', teardownGPU);
+            window.addEventListener('beforeunload', teardownGPU);
+            window.addEventListener('pageshow', function(e){ if (e.persisted) window.__tearingDown = false; });
+        })();
+
+        function fullscreen() {
+            // WEB PORT: cross-browser fullscreen TOGGLE (enter if not fullscreen, else exit).
+            // MUST be called from a user gesture (the button click or the Alt+Enter keydown) --
+            // browsers block requestFullscreen otherwise, which is exactly why the in-game
+            // "screen size" menu option (processed later in the WASM loop, outside any gesture)
+            // cannot trigger fullscreen. The game canvas already scales to fill the viewport,
+            // so going fullscreen makes it fill the whole screen (letterboxed to 4:3).
+            var el = document.getElementById('main');
+            var fsEl = document.fullscreenElement || document.webkitFullscreenElement || document.mozFullScreenElement;
+            if (!fsEl) {
+                var req = el.requestFullscreen || el.webkitRequestFullscreen || el.mozRequestFullScreen || el.msRequestFullscreen;
+                if (req) {
+                    var p = req.call(el);
+                    if (p && p.catch) p.catch(function(err){ console.log('[fullscreen] request blocked:', err && err.message); });
+                }
+                try { if (screen.orientation && screen.orientation.lock) { var lp = screen.orientation.lock('landscape'); if (lp && lp.catch) lp.catch(function(){}); } } catch(e){}
+            } else {
+                var exit = document.exitFullscreen || document.webkitExitFullscreen || document.mozCancelFullScreen || document.msExitFullscreen;
+                if (exit) { try { exit.call(document); } catch(e){} }
+            }
+        }
+        window.toggleFullscreen = fullscreen;
+
+        function preloadInit() {
+            // Files read SYNCHRONOUSLY at boot (via File.open, not the async load_data
+            // path) must be preloaded here, or they stay 1-byte dummies and reads return
+            // empty. These are the stock RMXP/RGSS1 data files every game has. If YOUR
+            // game reads extra data files synchronously at boot (e.g. compiled .dat like
+            // Pokémon Essentials' PBS files), add them here (lowercase path, no extension).
+            preloadList([
+                'rgss.rb',
+                'data/scripts',
+                'data/actors',
+                'data/classes',
+                'data/skills',
+                'data/items',
+                'data/weapons',
+                'data/armors',
+                'data/enemies',
+                'data/troops',
+                'data/states',
+                'data/animations',
+                'data/tilesets',
+                'data/commonevents',
+                'data/system',
+                'data/mapinfos',
+            ]);
+        }
+
+        // Load wasm then initialize
+        setTimeout(() => {
+            getLazyAsset('mkxp.wasm?v=' + BUILD_VER, 'Game engine', () => {
+                const s = document.createElement('script');
+                s.setAttribute('src', 'mkxp.js?v=' + BUILD_VER);
+                document.body.appendChild(s);
+
+                getLazyAsset('gameasync/bitmap-map.js', 'Primary assets', () => {
+                    const s = document.createElement('script');
+                    s.setAttribute('src', 'gameasync/bitmap-map.js');
+                    document.body.appendChild(s);
+                });
+            });
+        }, 200);
+        var bitmapSizeMapping = {};
+
+        if (!is_touch_device()) {
+            document.getElementById('dpad').style.display = 'none';
+            document.getElementById('apad').style.display = 'none';
+        }
+
+        // Add all bindings
+        bindKey('d-up', 38);
+        bindKey('d-right', 39);
+        bindKey('d-down', 40);
+        bindKey('d-left', 37);
+        bindKey('ap-c', 67);
+        bindKey('ap-b', 88);
+        bindKey('ap-a', 90);
+        bindKey('ap-ka', 65);
+
+        resize();
+    </script>
+
+    <script>
+      // WEB PORT: real keyboard input. mkxp reads EventThread::keyStates, which
+      // the single-threaded web build never updates from the event queue. Map DOM
+      // event.code -> SDL scancode and push straight into keyStates via the
+      // exported web_set_scancode(). (Also callable for testing.)
+      var SDL_SC = {
+        'ArrowLeft':80,'ArrowRight':79,'ArrowUp':82,'ArrowDown':81,
+        'Space':44,'Enter':40,'NumpadEnter':88,'Escape':41,'Backspace':42,'Tab':43,
+        'ShiftLeft':225,'ShiftRight':229,'ControlLeft':224,'ControlRight':228,'AltLeft':226,'AltRight':230,
+        'KeyA':4,'KeyB':5,'KeyC':6,'KeyD':7,'KeyE':8,'KeyF':9,'KeyG':10,'KeyH':11,'KeyI':12,'KeyJ':13,
+        'KeyK':14,'KeyL':15,'KeyM':16,'KeyN':17,'KeyO':18,'KeyP':19,'KeyQ':20,'KeyR':21,'KeyS':22,'KeyT':23,
+        'KeyU':24,'KeyV':25,'KeyW':26,'KeyX':27,'KeyY':28,'KeyZ':29,
+        'Digit1':30,'Digit2':31,'Digit3':32,'Digit4':33,'Digit5':34,'Digit6':35,'Digit7':36,'Digit8':37,'Digit9':38,'Digit0':39,
+        'F1':58,'F2':59,'F5':62,'F12':69,
+        'Comma':54,'Period':55,'Slash':56,'Semicolon':51,'Quote':52,'Minus':45,'Equal':46
+      };
+      window.webSetKey = function(sc, down){
+        if (typeof Module!=='undefined' && Module.ccall) {
+          try { Module.ccall('web_set_scancode', null, ['number','number'], [sc, down?1:0]); return true; } catch(e){ return String(e); }
+        }
+        return false;
+      };
+      function webKey(e, down){
+        var sc = SDL_SC[e.code];
+        if (sc === undefined) return;
+        if (window.webSetKey(sc, down) === true) { e.preventDefault(); }
+      }
+      window.addEventListener('keydown', function(e){
+        // WEB PORT: Alt+Enter toggles fullscreen. Handled here in the real keydown
+        // gesture (so the browser permits requestFullscreen) and consumed, so the game
+        // does NOT also receive it as a plain Enter/confirm.
+        if (e.altKey && (e.code === 'Enter' || e.code === 'NumpadEnter')) {
+          e.preventDefault(); e.stopImmediatePropagation();
+          if (window.toggleFullscreen) window.toggleFullscreen();
+          return;
+        }
+        webKey(e, 1);
+      });
+      window.addEventListener('keyup',   function(e){ webKey(e, 0); });
+
+      // WEB PORT: emscripten's rAF main loop is paused while the tab is hidden
+      // (e.g. headless preview / background tab), freezing the game. When hidden,
+      // drive the loop via setTimeout instead so it keeps running.
+      (function installTimeoutDriverWhenHidden(){
+        function apply(){
+          try{
+            if (document.hidden && typeof Browser!=='undefined' && Browser.mainLoop && Browser.mainLoop.runner && Browser.mainLoop.timingMode !== 0){
+              if (typeof Module!=='undefined' && Module._emscripten_set_main_loop_timing) { Module._emscripten_set_main_loop_timing(0,16); }
+              Browser.mainLoop.timingMode=0; Browser.mainLoop.timingValue=16;
+              var r=Browser.mainLoop.runner;
+              Browser.mainLoop.scheduler=function(){ setTimeout(r,16); };
+              setTimeout(r,0);
+            }
+          }catch(e){}
+        }
+        setInterval(apply, 500);
+        document.addEventListener('visibilitychange', apply);
+      })();
+    </script>
+
+    <!-- <script async type="text/javascript" src="mkxp.js"></script> -->
+  </body>
+</html>
+
+

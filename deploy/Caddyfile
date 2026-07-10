@@ -1,0 +1,58 @@
+# ─── RGSS-Web (mkxp-web-jspi) — Caddy static-serving config ───────────────────────
+# Client-side WASM game: Caddy just serves static files with the right MIME,
+# compression and cache headers. No per-player server CPU.
+
+{
+	# Security / minimalism
+	admin off            # no admin API surface (localhost:2019 control endpoint)
+	persist_config off   # don't rewrite config to /config on startup
+	auto_https off       # HTTP only; TLS terminates at your reverse proxy.
+	                     # For standalone HTTPS instead: delete this line and change
+	                     # the site address below from ":8080" to your domain
+	                     # (e.g. play.example.com) — Caddy then gets a cert via ACME.
+	servers {
+		trusted_proxies static private_ranges   # trust X-Forwarded-* only from private nets
+	}
+}
+
+:8080 {
+	root * /srv
+
+	# Compression: serve pre-generated .br/.gz siblings (zero per-request CPU);
+	# `encode` is the dynamic fallback for anything not pre-compressed.
+	encode zstd gzip
+	file_server {
+		precompressed br zstd gzip
+	}
+
+	# --- MIME: guarantee application/wasm (needed for WebAssembly.instantiateStreaming) ---
+	@wasm path *.wasm
+	header @wasm Content-Type application/wasm
+
+	# --- Security headers ---
+	header {
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "no-referrer"
+		# Anti-clickjacking. The game is normally its own top-level page. If you
+		# EMBED it in an <iframe> on another site (e.g. WordPress), add that origin:
+		#   Content-Security-Policy "frame-ancestors 'self' https://your-wordpress-site"
+		Content-Security-Policy "frame-ancestors 'self'"
+		Permissions-Policy "fullscreen=(self)"
+		-Server              # drop the "Server: Caddy" banner
+		defer                # apply after file_server sets its own headers
+	}
+
+	# --- Cache-Control ---
+	# Immutable: the engine (loaded ?v=BUILD_VER) + all content-hashed game media
+	# (loaded ?h=<md5>). The URL changes whenever the bytes change, so cache 1 year.
+	@immutable path *.wasm /mkxp.js /gameasync/*
+	header @immutable Cache-Control "public, max-age=31536000, immutable"
+
+	# Revalidate: unversioned shell files that change on redeploy. Listed AFTER the
+	# immutable rule so these win for the overlapping paths (e.g. gameasync/mapping.js).
+	@shell path / /index.html /sw.js /manifest.webmanifest /gameasync/mapping.js /gameasync/bitmap-map.js /js/*
+	header @shell Cache-Control "no-cache"
+
+	# No COOP/COEP: the build is single-threaded (no SharedArrayBuffer), so cross-
+	# origin isolation is NOT required and would only risk breaking asset loads.
+}

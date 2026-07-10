@@ -1,0 +1,35 @@
+# Turnkey hardened run for the RGSS-Web deploy image.
+#   cd deploy && docker compose up -d --build
+# Then reverse-proxy https://your-domain -> http://<host>:8080 (TLS at the edge).
+services:
+  rgss-web:
+    build:
+      context: ..                 # repo root (so it can COPY mkxp-web/build)
+      dockerfile: deploy/Dockerfile
+    image: rgss-web:latest
+    container_name: rgss-web
+    ports:
+      - "8080:8080"
+    restart: unless-stopped
+
+    # --- hardening ---
+    read_only: true               # immutable root FS
+    tmpfs:
+      - /tmp
+    volumes:                      # the only writable paths Caddy needs
+      - caddy-data:/data
+      - caddy-config:/config
+    cap_drop:
+      - ALL                       # serving on :8080 needs no Linux capabilities
+    security_opt:
+      - no-new-privileges:true
+
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/index.html"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+
+volumes:
+  caddy-data:
+  caddy-config:

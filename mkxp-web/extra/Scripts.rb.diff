@@ -1,0 +1,487 @@
+diff -bur raw/KN_Custom.rb pro/KN_Custom.rb
+--- raw/KN_Custom.rb	2020-10-19 01:32:18.595966594 +0530
++++ pro/KN_Custom.rb	2020-10-19 01:32:20.911967702 +0530
+@@ -552,18 +552,11 @@
+     # コンティニュー有効判定
+     # セーブファイルがひとつでも存在するかどうかを調べる
+     # 有効なら @continue_enabled を true、無効なら false にする
+-    @continue_enabled = false
++    @continue_enabled = true
+     for i in 0..3
+       if FileTest.exist?("Save#{i+1}.rxdata")
+-        @continue_enabled = true
+-      end
+-    end
+-    # コンティニューが有効な場合、カーソルをコンティニューに合わせる
+-    # 無効な場合、コンティニューの文字をグレー表示にする
+-    if @continue_enabled
+       @command_window.index = 1
+-    else
+-      @command_window.disable_item(1)
++      end
+     end
+     # タイトル BGM を演奏
+     $game_system.bgm_play($data_system.title_bgm)
+@@ -572,26 +565,6 @@
+     Audio.bgs_stop
+     # トランジション実行
+     Graphics.transition
+-    # メインループ
+-    loop do
+-      # ゲーム画面を更新
+-      Graphics.update
+-      # 入力情報を更新
+-      Input.update
+-      # フレーム更新
+-      update
+-      # 画面が切り替わったらループを中断
+-      if $scene != self
+-        break
+-      end
+-    end
+-    # トランジション準備
+-    Graphics.freeze
+-    # コマンドウィンドウを解放
+-    @command_window.dispose
+-    # タイトルグラフィックを解放
+-    @sprite.bitmap.dispose
+-    @sprite.dispose
+   end
+ end
+ 
+diff -bur raw/Main.rb pro/Main.rb
+--- raw/Main.rb	2020-10-19 01:32:18.595966594 +0530
++++ pro/Main.rb	2020-10-19 01:32:20.911967702 +0530
+@@ -4,15 +4,37 @@
+ # 　各クラスの定義が終わった後、ここから実際の処理が始まります。
+ #==============================================================================
+ 
++$prev_scene = nil
++
++def main_update_loop
++  if $scene != nil
++    if $scene != $prev_scene
++      if $prev_scene != nil
++	$prev_scene.dispose
++      end
++      $scene.main
++      $prev_scene = $scene
++    end
++    # Update game screen
++    Graphics.update
++    # Update input information
++    Input.update
++    # Frame update
++    $scene.update
++  else
++    raise "END"
++  end
++end
++
+ begin
+   # トランジション準備
+   Graphics.freeze
+   # シーンオブジェクト (タイトル画面) を作成
+   $scene = Scene_Title.new
+   # $scene が有効な限り main メソッドを呼び出す
+-  while $scene != nil
+-    $scene.main
+-  end
++  #while $scene != nil
++    #$scene.main
++  #end
+   # フェードアウト
+   Graphics.transition(20)
+ rescue Errno::ENOENT
+diff -bur raw/Scene_Battle_1.rb pro/Scene_Battle_1.rb
+--- raw/Scene_Battle_1.rb	2020-10-19 01:32:18.595966594 +0530
++++ pro/Scene_Battle_1.rb	2020-10-19 01:32:20.907967700 +0530
+@@ -52,19 +52,9 @@
+     end
+     # プレバトルフェーズ開始
+     start_phase1
+-    # メインループ
+-    loop do
+-      # ゲーム画面を更新
+-      Graphics.update
+-      # 入力情報を更新
+-      Input.update
+-      # フレーム更新
+-      update
+-      # 画面が切り替わったらループを中断
+-      if $scene != self
+-        break
+-      end
+     end
++
++  def dispose
+     # マップをリフレッシュ
+     $game_map.refresh
+     # トランジション準備
+diff -bur raw/Scene_Battle_3.rb pro/Scene_Battle_3.rb
+--- raw/Scene_Battle_3.rb	2020-10-19 01:32:18.595966594 +0530
++++ pro/Scene_Battle_3.rb	2020-10-19 01:32:20.907967700 +0530
+@@ -22,7 +22,7 @@
+   #--------------------------------------------------------------------------
+   def phase3_next_actor
+     # ループ
+-    begin
++    loop do
+       # アクターの明滅エフェクト OFF
+       if @active_battler != nil
+         @active_battler.blink = false
+@@ -38,7 +38,8 @@
+       @active_battler = $game_party.actors[@actor_index]
+       @active_battler.blink = true
+     # アクターがコマンド入力を受け付けない状態ならもう一度
+-    end until @active_battler.inputable?
++      break if @active_battler.inputable?
++    end
+     # アクターコマンドウィンドウをセットアップ
+     phase3_setup_command_window
+   end
+diff -bur raw/Scene_Debug.rb pro/Scene_Debug.rb
+--- raw/Scene_Debug.rb	2020-10-19 01:32:18.595966594 +0530
++++ pro/Scene_Debug.rb	2020-10-19 01:32:20.907967700 +0530
+@@ -21,19 +21,9 @@
+     @right_window.top_id = @left_window.top_id
+     # トランジション実行
+     Graphics.transition
+-    # メインループ
+-    loop do
+-      # ゲーム画面を更新
+-      Graphics.update
+-      # 入力情報を更新
+-      Input.update
+-      # フレーム更新
+-      update
+-      # 画面が切り替わったらループを中断
+-      if $scene != self
+-        break
+-      end
+     end
++
++  def dispose
+     # マップをリフレッシュ
+     $game_map.refresh
+     # トランジション準備
+diff -bur raw/Scene_End.rb pro/Scene_End.rb
+--- raw/Scene_End.rb	2020-10-19 01:32:18.595966594 +0530
++++ pro/Scene_End.rb	2020-10-19 01:32:20.907967700 +0530
+@@ -18,19 +18,9 @@
+     @command_window.y = 240 - @command_window.height / 2
+     # トランジション実行
+     Graphics.transition
+-    # メインループ
+-    loop do
+-      # ゲーム画面を更新
+-      Graphics.update
+-      # 入力情報を更新
+-      Input.update
+-      # フレーム更新
+-      update
+-      # 画面が切り替わったらループを中断
+-      if $scene != self
+-        break
+-      end
+     end
++
++  def dispose
+     # トランジション準備
+     Graphics.freeze
+     # ウィンドウを解放
+diff -bur raw/Scene_Equip.rb pro/Scene_Equip.rb
+--- raw/Scene_Equip.rb	2020-10-19 01:32:18.595966594 +0530
++++ pro/Scene_Equip.rb	2020-10-19 01:32:20.907967700 +0530
+@@ -41,19 +41,9 @@
+     refresh
+     # トランジション実行
+     Graphics.transition
+-    # メインループ
+-    loop do
+-      # ゲーム画面を更新
+-      Graphics.update
+-      # 入力情報を更新
+-      Input.update
+-      # フレーム更新
+-      update
+-      # 画面が切り替わったらループを中断
+-      if $scene != self
+-        break
+-      end
+     end
++
++  def dispose
+     # トランジション準備
+     Graphics.freeze
+     # ウィンドウを解放
+diff -bur raw/Scene_File.rb pro/Scene_File.rb
+--- raw/Scene_File.rb	2020-10-19 01:32:18.595966594 +0530
++++ pro/Scene_File.rb	2020-10-19 01:32:20.907967700 +0530
+@@ -29,19 +29,9 @@
+     @savefile_windows[@file_index].selected = true
+     # トランジション実行
+     Graphics.transition
+-    # メインループ
+-    loop do
+-      # ゲーム画面を更新
+-      Graphics.update
+-      # 入力情報を更新
+-      Input.update
+-      # フレーム更新
+-      update
+-      # 画面が切り替わったらループを中断
+-      if $scene != self
+-        break
+-      end
+     end
++
++  def dispose
+     # トランジション準備
+     Graphics.freeze
+     # ウィンドウを解放
+diff -bur raw/Scene_Gameover.rb pro/Scene_Gameover.rb
+--- raw/Scene_Gameover.rb	2020-10-19 01:32:18.595966594 +0530
++++ pro/Scene_Gameover.rb	2020-10-19 01:32:20.907967700 +0530
+@@ -19,19 +19,9 @@
+     $game_system.me_play($data_system.gameover_me)
+     # トランジション実行
+     Graphics.transition(120)
+-    # メインループ
+-    loop do
+-      # ゲーム画面を更新
+-      Graphics.update
+-      # 入力情報を更新
+-      Input.update
+-      # フレーム更新
+-      update
+-      # 画面が切り替わったらループを中断
+-      if $scene != self
+-        break
+-      end
+     end
++
++  def dispose
+     # トランジション準備
+     Graphics.freeze
+     # ゲームオーバーグラフィックを解放
+diff -bur raw/Scene_Item.rb pro/Scene_Item.rb
+--- raw/Scene_Item.rb	2020-10-19 01:32:18.595966594 +0530
++++ pro/Scene_Item.rb	2020-10-19 01:32:20.907967700 +0530
+@@ -20,19 +20,9 @@
+     @target_window.active = false
+     # トランジション実行
+     Graphics.transition
+-    # メインループ
+-    loop do
+-      # ゲーム画面を更新
+-      Graphics.update
+-      # 入力情報を更新
+-      Input.update
+-      # フレーム更新
+-      update
+-      # 画面が切り替わったらループを中断
+-      if $scene != self
+-        break
+-      end
+     end
++
++  def dispose
+     # トランジション準備
+     Graphics.freeze
+     # ウィンドウを解放
+diff -bur raw/Scene_Map.rb pro/Scene_Map.rb
+--- raw/Scene_Map.rb	2020-10-19 01:32:18.595966594 +0530
++++ pro/Scene_Map.rb	2020-10-19 01:32:20.907967700 +0530
+@@ -15,19 +15,9 @@
+     @message_window = Window_Message.new
+     # トランジション実行
+     Graphics.transition
+-    # メインループ
+-    loop do
+-      # ゲーム画面を更新
+-      Graphics.update
+-      # 入力情報を更新
+-      Input.update
+-      # フレーム更新
+-      update
+-      # 画面が切り替わったらループを中断
+-      if $scene != self
+-        break
+-      end
+     end
++
++  def dispose
+     # トランジション準備
+     Graphics.freeze
+     # スプライトセットを解放
+diff -bur raw/Scene_Menu.rb pro/Scene_Menu.rb
+--- raw/Scene_Menu.rb	2020-10-19 01:32:18.595966594 +0530
++++ pro/Scene_Menu.rb	2020-10-19 01:32:20.907967700 +0530
+@@ -56,19 +56,9 @@
+     @status_window.y = 0
+     # トランジション実行
+     Graphics.transition
+-    # メインループ
+-    loop do
+-      # ゲーム画面を更新
+-      Graphics.update
+-      # 入力情報を更新
+-      Input.update
+-      # フレーム更新
+-      update
+-      # 画面が切り替わったらループを中断
+-      if $scene != self
+-        break
+-      end
+     end
++
++  def dispose
+     # トランジション準備
+     Graphics.freeze
+     # ウィンドウを解放
+diff -bur raw/Scene_Name.rb pro/Scene_Name.rb
+--- raw/Scene_Name.rb	2020-10-19 01:32:18.595966594 +0530
++++ pro/Scene_Name.rb	2020-10-19 01:32:20.907967700 +0530
+@@ -16,19 +16,9 @@
+     @input_window = Window_NameInput.new
+     # トランジション実行
+     Graphics.transition
+-    # メインループ
+-    loop do
+-      # ゲーム画面を更新
+-      Graphics.update
+-      # 入力情報を更新
+-      Input.update
+-      # フレーム更新
+-      update
+-      # 画面が切り替わったらループを中断
+-      if $scene != self
+-        break
+-      end
+     end
++
++  def dispose
+     # トランジション準備
+     Graphics.freeze
+     # ウィンドウを解放
+diff -bur raw/Scene_Save.rb pro/Scene_Save.rb
+--- raw/Scene_Save.rb	2020-10-19 01:32:18.595966594 +0530
++++ pro/Scene_Save.rb	2020-10-19 01:32:20.907967700 +0530
+@@ -21,6 +21,9 @@
+     file = File.open(filename, "wb")
+     write_save_data(file)
+     file.close
++  
++    save_file_async(filename)
++
+     # イベントから呼び出されている場合
+     if $game_temp.save_calling
+       # セーブ呼び出しフラグをクリア
+@@ -80,5 +83,6 @@
+     Marshal.dump($game_troop, file)
+     Marshal.dump($game_map, file)
+     Marshal.dump($game_player, file)
++    Marshal.dump(1, file)
+   end
+ end
+diff -bur raw/Scene_Shop.rb pro/Scene_Shop.rb
+--- raw/Scene_Shop.rb	2020-10-19 01:32:18.595966594 +0530
++++ pro/Scene_Shop.rb	2020-10-19 01:32:20.907967700 +0530
+@@ -38,19 +38,9 @@
+     @status_window.visible = false
+     # トランジション実行
+     Graphics.transition
+-    # メインループ
+-    loop do
+-      # ゲーム画面を更新
+-      Graphics.update
+-      # 入力情報を更新
+-      Input.update
+-      # フレーム更新
+-      update
+-      # 画面が切り替わったらループを中断
+-      if $scene != self
+-        break
+-      end
+     end
++
++  def dispose
+     # トランジション準備
+     Graphics.freeze
+     # ウィンドウを解放
+diff -bur raw/Scene_Skill.rb pro/Scene_Skill.rb
+--- raw/Scene_Skill.rb	2020-10-19 01:32:18.595966594 +0530
++++ pro/Scene_Skill.rb	2020-10-19 01:32:20.907967700 +0530
+@@ -30,19 +30,9 @@
+     @target_window.active = false
+     # トランジション実行
+     Graphics.transition
+-    # メインループ
+-    loop do
+-      # ゲーム画面を更新
+-      Graphics.update
+-      # 入力情報を更新
+-      Input.update
+-      # フレーム更新
+-      update
+-      # 画面が切り替わったらループを中断
+-      if $scene != self
+-        break
+-      end
+     end
++
++  def dispose
+     # トランジション準備
+     Graphics.freeze
+     # ウィンドウを解放
+diff -bur raw/Scene_Status.rb pro/Scene_Status.rb
+--- raw/Scene_Status.rb	2020-10-19 01:32:18.595966594 +0530
++++ pro/Scene_Status.rb	2020-10-19 01:32:20.907967700 +0530
+@@ -22,19 +22,9 @@
+     @status_window = Window_Status.new(@actor)
+     # トランジション実行
+     Graphics.transition
+-    # メインループ
+-    loop do
+-      # ゲーム画面を更新
+-      Graphics.update
+-      # 入力情報を更新
+-      Input.update
+-      # フレーム更新
+-      update
+-      # 画面が切り替わったらループを中断
+-      if $scene != self
+-        break
+-      end
+     end
++
++  def dispose
+     # トランジション準備
+     Graphics.freeze
+     # ウィンドウを解放
+diff -bur raw/Scene_Title.rb pro/Scene_Title.rb
+--- raw/Scene_Title.rb	2020-10-19 01:32:18.595966594 +0530
++++ pro/Scene_Title.rb	2020-10-19 01:32:20.907967700 +0530
+@@ -64,19 +64,9 @@
+     Audio.bgs_stop
+     # トランジション実行
+     Graphics.transition
+-    # メインループ
+-    loop do
+-      # ゲーム画面を更新
+-      Graphics.update
+-      # 入力情報を更新
+-      Input.update
+-      # フレーム更新
+-      update
+-      # 画面が切り替わったらループを中断
+-      if $scene != self
+-        break
+-      end
+     end
++
++  def dispose
+     # トランジション準備
+     Graphics.freeze
+     # コマンドウィンドウを解放

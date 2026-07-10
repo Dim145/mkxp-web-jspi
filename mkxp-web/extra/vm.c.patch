@@ -1,0 +1,110 @@
+# mkxp-web mruby 2.1.2 compatibility patch (src/vm.c)
+# Apply from within deps/mruby:  patch -p0 --forward < ../../extra/vm.c.patch
+# Regenerated 2026-07-09 by diffing the working vm.c against pristine mruby 2.1.2,
+# so a from-clean build reproduces the engine. Contains FOUR hunks:
+#  1. (~L1577) super+alias: mruby 2.1.2 mis-computes MRB_PROC_TARGET_CLASS through
+#     deep alias chains (Essentials/RGSS plugins) -> spurious "self has wrong type
+#     to call super"; fall back to self's real class instead of raising.
+#  2. (~L1593) super garbage-mid: when the alias-corrupted `mid` is not a valid
+#     symbol (mrb_sym_name == NULL), make super a no-op instead of crashing.
+#  3. (~L2262) fixnum division: original mkxp-web fix (integer / integer path).
+#  4. (~L2842) escaping-proc env-unshare: force-unshare the top-level env after each
+#     top-level load so escaping procs (Events.on* += proc{}) don't reference a
+#     clobbered on-stack self after later loads/GC -> fixes "undefined method" from
+#     stored callbacks. Mirrors mrb_env_unshare WITHOUT its cibase skip.
+--- src/vm.c
++++ src/vm.c
+@@ -1577,10 +1577,23 @@
+       }
+       recv = regs[0];
+       if (!mrb_obj_is_kind_of(mrb, recv, target_class)) {
+-        mrb_value exc = mrb_exc_new_str_lit(mrb, E_TYPE_ERROR,
+-                                            "self has wrong type to call super in this context");
+-        mrb_exc_set(mrb, exc);
+-        goto L_RAISE;
++        /* WEB PORT: mruby 2.1.2 mis-computes MRB_PROC_TARGET_CLASS (and, for the
++         * same procs, corrupts env->mid) for `super` reached through the deep
++         * multi-alias chains Pokemon Essentials builds (many plugins each do
++         * `alias old_x dispose; def dispose; ...` on Sprite_Character etc.). That
++         * raised a spurious "self has wrong type to call super". Fall back to
++         * self's real class so the super search walks self's actual ancestry
++         * (`cls = target_class->super` below) instead of aborting. */
++        struct RClass *sc = mrb_class(mrb, recv);
++        if (sc) {
++          target_class = sc;
++        }
++        else {
++          mrb_value exc = mrb_exc_new_str_lit(mrb, E_TYPE_ERROR,
++                                              "self has wrong type to call super in this context");
++          mrb_exc_set(mrb, exc);
++          goto L_RAISE;
++        }
+       }
+       blk = regs[bidx];
+       if (!mrb_nil_p(blk) && !mrb_proc_p(blk)) {
+@@ -1593,6 +1606,18 @@
+       cls = target_class->super;
+       m = mrb_method_search_vm(mrb, &cls, mid);
+       if (MRB_METHOD_UNDEF_P(m)) {
++        /* WEB PORT: when the (possibly alias-corrupted) `mid` is not a valid
++         * symbol, the intended parent method name was lost by mruby's broken
++         * alias/env handling. Skip the parent call (super becomes a no-op that
++         * returns nil) rather than crashing the whole game with a bogus
++         * "undefined method '<garbage>'". Only triggers for the corrupted case;
++         * a normal super to a genuinely missing method still has a valid mid and
++         * proceeds to method_missing below. */
++        if (mid == 0 || mrb_sym_name(mrb, mid) == NULL) {
++          regs[a] = mrb_nil_value();
++          mrb_gc_arena_restore(mrb, ai);
++          NEXT;
++        }
+         mrb_sym missing = mrb_intern_lit(mrb, "method_missing");
+ 
+         if (mid != missing) {
+@@ -2262,13 +2287,15 @@
+       switch (TYPES2(mrb_type(regs[a]),mrb_type(regs[a+1]))) {
+       case TYPES2(MRB_TT_FIXNUM,MRB_TT_FIXNUM):
+ #ifdef MRB_WITHOUT_FLOAT
++#else
+         {
+           mrb_int x = mrb_fixnum(regs[a]);
+           mrb_int y = mrb_fixnum(regs[a+1]);
+           SET_INT_VALUE(regs[a], y ? x / y : 0);
+         }
++        NEXT;
+         break;
+-#else
++
+         x = (mrb_float)mrb_fixnum(regs[a]);
+         y = (mrb_float)mrb_fixnum(regs[a+1]);
+         break;
+@@ -2842,7 +2869,28 @@
+   }
+   if (mrb->c->ci == mrb->c->cibase) {
+     mrb->c->ci->env = NULL;
+-    return mrb_vm_run(mrb, proc, self, stack_keep);
++    v = mrb_vm_run(mrb, proc, self, stack_keep);
++    /* WEB PORT: force-unshare the top-level env after the load finishes.
++     * OP_STOP never unshares, and mrb_env_unshare deliberately skips
++     * cibase->env (so mirb keeps top-level locals live across input lines).
++     * But Pokemon Essentials creates *escaping* procs at script top level
++     * (`Events.onMapUpdate += proc{...}`); their captured self/locals live in
++     * this shared on-stack env. Once this load returns and the stack is reused
++     * (next section / gameplay), that self becomes garbage and bare top-level
++     * method calls from the proc raise "undefined method". Heap-copy the env
++     * now so the stored procs stay valid for the whole session. */
++    {
++      struct REnv *e = mrb->c->ci->env;
++      if (e && MRB_ENV_ONSTACK_P(e) && e->cxt == mrb->c) {
++        mrb_int len = MRB_ENV_LEN(e);
++        mrb_value *p = (mrb_value *)mrb_malloc(mrb, sizeof(mrb_value) * (len > 0 ? len : 1));
++        if (len > 0) stack_copy(p, e->stack, len);
++        e->stack = p;
++        MRB_ENV_CLOSE(e);
++        mrb_write_barrier(mrb, (struct RBasic *)e);
++      }
++    }
++    return v;
+   }
+   ci = cipush(mrb);
+   ci->stackent = mrb->c->stack;
