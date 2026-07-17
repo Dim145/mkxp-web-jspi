@@ -3,7 +3,7 @@
 This fork (RGSS-Web / mkxp-web-jspi) modifies pulsejet/mkxp-web. Per GPL-2.0 §2(a),
 the significant changes and the date they were made:
 
-## 2026 — run script-heavy RGSS1 games (e.g. Pokémon Essentials) in the browser
+## 2026 — run script-heavy RGSS1 (XP) and RGSS2 (VX) games in the browser
 
 **Event loop (the key change)**
 - `src/graphics.cpp` — `FPSLimiter::delayTicks()` now calls `emscripten_sleep()` so a
@@ -35,6 +35,29 @@ the significant changes and the date they were made:
   water/grass) into a single 32×32 quad — pixel-identical but ¼ the vertices, so the tile
   VBO build and the animated tilemap vertex shader do ¼ the work on water/grass-heavy maps.
   Edge/corner patterns have non-contiguous pieces and keep the 4-piece path.
+
+**RPG Maker VX (RGSS2) support** — see [docs/RGSS2-VX.md](docs/RGSS2-VX.md)
+- `binding-mruby/binding-mruby.cpp` — bind the version-appropriate renderer from `rgssVer`:
+  `rgssVer >= 2` selects the new `WindowVX` + `TilemapVX` bindings, otherwise the RGSS1
+  `Window` + `Tilemap`. Both are compiled in.
+- `binding-mruby/windowvx-binding.cpp`, `tilemapvx-binding.cpp` — new mruby bindings for the
+  RGSS2 `Window` / `Tilemap` (backed by the existing `src/windowvx.cpp` / `src/tilemapvx.cpp`
+  engine classes); `binding-util` exposes the `flags` / `bitmaps` symbols the VX tilemap uses.
+- `binding-mruby/viewportelement-binding.h` — bind the `viewport=` setter on
+  Sprite / Window / Plane (VX menu and battle scenes reassign a drawable's viewport at
+  runtime; upstream exposed only the getter).
+- `src/config.cpp` — VX build defaults: `rgssVersion = 2`, 544×416, `Data/Scripts.rvdata`.
+- `extra/rgss.rb` — the `RPG::` data-class shim exposes the VX-shaped fields Marshalled from
+  `.rvdata` (weapon/armor combat params + feature flags, skill/item `icon_index` + skill
+  messages, enemy `maxmp`/`def`/`spi`/`hit`/drops/conditions, animation `animation1_name…`,
+  state fields), alongside the XP-shaped fields.
+- `src/filesystem.cpp` — resolve NFC/NFD Unicode filename forms (VX RTP / Japanese asset names).
+- `extra/js/drive.js` — accept both `.rxdata` and `.rvdata` map files.
+- `CMakeLists.txt` — build the two new VX bindings; raise the wasm stack to 8 MB (deep
+  RGSS/mruby recursion under JSPI overflows the 64 KB default); add a `MKXP_WEB_DEBUG` build
+  toggle (`ASSERTIONS`/`SAFE_HEAP`/`STACK_OVERFLOW_CHECK` + `-g2`). `binding-mruby.cpp` and
+  `src/eventthread.cpp` also emit boot script-load traces and script-error / message-box text
+  to stderr for diagnosing new ports.
 
 **Audio (frame-independent BGM)**
 - `src/emscripten.cpp/.hpp`, `binding-mruby/audio-binding.cpp` — added `Audio.web_bgm_play/

@@ -3,9 +3,13 @@
 This guide describes how to get a heavily-scripted RPG Maker XP (RGSS1) game — the
 motivating example being a Pokémon Essentials fan-game — to boot and run under
 **RGSS-Web** (this fork, `mkxp-web-jspi`). The engine embeds **mruby 2.1.2**, not
-CRuby/MRI. RGSS scripts written and tested against RPG Maker XP's bundled MRI
+CRuby/MRI. RGSS scripts written and tested against RPG Maker's bundled MRI
 interpreter will not run unchanged: the language dialect, standard library, and C
 extensions all differ.
+
+> This applies equally to **RPG Maker VX (RGSS2)** games — the mruby dialect and stdlib
+> gaps are identical. VX adds one extra class of issue (missing VX `RPG::` data-class
+> fields in the shim); see [RGSS2-VX.md](RGSS2-VX.md).
 
 Be honest about the shape of the work:
 
@@ -21,10 +25,11 @@ mechanical porting plus asset processing gets close to "just works" (not exhaust
 tested across arbitrary games). For Essentials-class games, expect substantial
 per-game porting even with the engine fixes and shims below.
 
-The engine itself is game-agnostic: `mkxp.wasm` reads `Game.ini` and
-`Data/Scripts.rxdata` at **runtime**. Porting scripts is a re-packaging task
-(`import-game.sh`, then repack `Scripts.rxdata`) — you do **not** rebuild the engine
-to port a game. You only rebuild (`rebuild-*.sh`) when you change the C++/mruby.
+The engine itself is game-agnostic: `mkxp.wasm` reads the game's scripts at **runtime**
+(`Data/Scripts.rxdata` for XP, `Data/Scripts.rvdata` for VX). Porting scripts is a
+re-packaging task (`import-game.sh`, then repack the `Scripts.r?data`) — you do **not**
+rebuild the engine to port a game. You only rebuild (`rebuild-*.sh`) when you change the
+C++/mruby.
 
 ---
 
@@ -270,11 +275,11 @@ Keep the split purely mechanical (preserve branch order and behavior). Large top
 
 ## 5. Standard-library / native gaps covered by `extra/rgss.rb`
 
-`extra/rgss.rb` is loaded **before** the game's `Scripts.rxdata` sections
-(`binding-mruby.cpp` reads `rgss.rb` first, then each script section in order).
-`import-game.sh` copies it to `build/gameasync/rgss.rb`. It provides the RGSS1 `RPG::`
-data classes plus **generic** shims for mruby/browser gaps. What each covers, and what
-is left to you:
+`extra/rgss.rb` is loaded **before** the game's script sections (`binding-mruby.cpp`
+reads `rgss.rb` first, then each `Scripts.r?data` section in order). `import-game.sh`
+copies it to `build/gameasync/rgss.rb`. It provides the `RPG::` data classes (both
+RGSS1- and RGSS2/VX-shaped fields — see [RGSS2-VX.md](RGSS2-VX.md)) plus **generic**
+shims for mruby/browser gaps. What each covers, and what is left to you:
 
 | Feature | Shim in `rgss.rb` | What remains game-specific |
 |---|---|---|

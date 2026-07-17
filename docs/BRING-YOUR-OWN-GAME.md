@@ -1,15 +1,21 @@
 # Bring Your Own Game
 
-This guide walks through running **your** RPG Maker XP (RGSS1) game in the browser with
-RGSS-Web. The engine ships with **no game and no RTP assets** — you supply your own game
-files, and you are solely responsible for their licensing and rights (see `NOTICE`).
+This guide walks through running **your** RPG Maker XP (RGSS1) or VX (RGSS2) game in the
+browser with RGSS-Web. The engine ships with **no game and no RTP assets** — you supply your
+own game files, and you are solely responsible for their licensing and rights (see `NOTICE`).
+
+The steps below use XP (`.rxdata`) in their examples; the pipeline auto-detects VX
+(`.rvdata`) too — the VX deltas (mainly the build config) are in
+[RPG Maker VX (RGSS2) games](#rpg-maker-vx-rgss2-games) below and in [RGSS2-VX.md](RGSS2-VX.md).
 
 ## TL;DR
 
-The engine WASM (`mkxp.wasm`) is **game-agnostic**. It reads `Game.ini` and
-`Data/Scripts.rxdata` at **runtime**, so adding a new game is a **re-packaging** task, not
-an engine rebuild. You only rebuild the engine (`rebuild-*.sh`) when you change the C++ or
-mruby — never for a new game.
+The engine WASM (`mkxp.wasm`) is **game-agnostic**. It reads the game's scripts —
+`Data/Scripts.rxdata` (XP) or `Data/Scripts.rvdata` (VX) — plus its data and assets at
+**runtime**, so adding a new game is a **re-packaging** task, not an engine rebuild. You only
+rebuild the engine (`rebuild-*.sh`) when you change the C++ or mruby — or to switch the
+pinned RGSS version between XP and VX ([RGSS2-VX.md](RGSS2-VX.md)) — never for a new game of
+the same version.
 
 The whole pipeline runs inside the build container via `import-game.sh`, with your game
 mounted read-only at `/game`.
@@ -121,8 +127,26 @@ Adding or swapping a game only touches `build/gameasync/` and the generated maps
 is untouched. You only run `rebuild-*.sh` if you change the C++ or the mruby VM.
 
 ### Screen resolution
-Default render resolution is stock RGSS1 **640×480**. A game needing another internal
-resolution should call `Graphics.resize_screen(w, h)` at boot.
+Default render resolution follows the build's RGSS version: XP **640×480**, VX **544×416**
+(set in `src/config.cpp`). A game needing another internal resolution should call
+`Graphics.resize_screen(w, h)` at boot.
+
+## RPG Maker VX (RGSS2) games
+
+The engine runs RGSS2 / RPG Maker VX games in addition to XP; full details are in
+[RGSS2-VX.md](RGSS2-VX.md). The deltas from the XP flow above:
+
+- **Build for VX.** The RGSS version is pinned in `mkxp-web/src/config.cpp` — set
+  `rgssVersion = 2`, `defScreenW`/`defScreenH` to `544`/`416`, and
+  `game.scripts = "Data/Scripts.rvdata"`, then rebuild the engine. (The repo already
+  defaults to VX.)
+- **Data files are `.rvdata`,** not `.rxdata` (Scripts, Maps, System, …). The full pipeline
+  — `import-game.sh`'s script-extract, `gen-preload.rb`, `regen-mapping.sh`, and the asset
+  copy — auto-detects both extensions, so a VX game imports exactly like an XP one. When you
+  repack ported scripts, use the `.rvdata` path:
+  `ruby scripts_tool.rb pack scripts_src build/gameasync/Data/Scripts.rvdata`.
+- **Porting is the same** mruby work as XP ([PORTING-mruby.md](PORTING-mruby.md)), plus the
+  VX `RPG::` data-class field gaps described in [RGSS2-VX.md](RGSS2-VX.md).
 
 ## The tiered reality (be honest with yourself)
 
@@ -131,15 +155,131 @@ This repo is a **toolkit + porting guide**, not drag-and-drop. Because the Ruby 
 
 | Game type | What to expect |
 | --- | --- |
-| **Vanilla / lightly-scripted RGSS1** | Light mechanical porting + the asset processing above. Close to "just works" after import. (Not exhaustively tested across arbitrary games.) |
+| **Vanilla / lightly-scripted (XP or VX)** | Light mechanical porting + the asset processing above. Close to "just works" after import. (Not exhaustively tested across arbitrary games.) |
 | **Pokémon Essentials-class (heavily scripted)** | **Substantial per-game mruby porting is still required**, even with the engine's `emscripten_sleep` event-loop yield, the mruby VM fixes, and the `rgss.rb` shims. See `docs/PORTING-mruby.md`. |
 | **Plugin-heavy / custom-script** | Unknown per-game mruby walls. There is no pre-flight compatibility linter — you find out by running it. |
 
 ### Not supported
+- **RPG Maker VX Ace (RGSS3)** — a different runtime (`.rvdata2`, Features-based data classes). Only XP (RGSS1) and VX (RGSS2) are supported.
 - MRI/CRuby-only scripts (this is **mruby** only).
 - Video playback and WMA audio.
 - Native Win32API features (mouse hooks, INI, clipboard beyond the `rgss.rb` stub).
 - Extremely large bitmaps.
+
+## Performance: optional Essentials script patches
+
+These are **optional** hot-path patches for Pokémon Essentials-based games (the class and
+method names below are standard Essentials; exact script section numbers vary by version).
+They are pure-Ruby edits to *your* extracted `scripts_src/` — no engine rebuild — and matter
+in the browser far more than on desktop, because the Ruby VM is **mruby** (slower than MRI)
+and the whole game loop runs on one thread that yields to the browser once per frame via
+`emscripten_sleep`. Per-frame work that was invisible on desktop RGSS can dominate a frame
+here.
+
+> **Measuring first.** `Time.now` deltas are **unreliable** for CPU timing under JSPI — a
+> wall-clock span across a frame includes the browser yield/render time, so a Ruby timer can
+> report a figure larger than the frame's actual work. Profile with the engine's own
+> `[fps] … [work] … ms` console line and bisect (disable one loop, measure the delta).
+
+### 1. Cache animated panorama / fog bitmaps
+
+Essentials' `AnimatedPlane` (in the `SpriteWindow` script) **disposes** its decoded
+`AnimatedBitmap` on every `setPanorama` / `setFog` call. A map that *animates* its panorama
+or fog by cycling through several images — e.g. a parallel-process event calling **Change
+Map Settings** every few frames — therefore **re-decodes a full-screen PNG every cycle**.
+Disposal also drops the bitmap's refcount to zero, evicting it from the `BitmapCache`, so the
+next cycle decodes from disk again. On desktop this is negligible; in-browser it can cost
+tens of ms per swap and visibly tank the frame rate.
+
+Fix: keep a small **warm cache** of decoded bitmaps keyed by `path+hue`, reuse instead of
+disposing on swap, and free them only when the plane itself is disposed (a real map change)
+or via LRU beyond a cap. Leave `setBitmap`, `update` and `clearBitmaps` untouched — only the
+panorama/fog paths get warmed.
+
+```ruby
+class AnimatedPlane < LargePlane
+  def initialize(viewport)
+    super(viewport)
+    @bitmap  = nil
+    @warm    = {}     # "path|hue" => AnimatedBitmap (insertion order = LRU)
+    @warmMax = 8
+  end
+
+  def dispose
+    @warm.each_value { |ab| ab.dispose if ab && !ab.disposed? }
+    @warm.clear
+    @bitmap.dispose if @bitmap && !@bitmap.disposed?
+    @bitmap = nil
+    self.bitmap = nil if !self.disposed?
+    super
+  end
+
+  def setPanorama(file, hue = 0)
+    return _detach if file.nil?
+    _assignWarm("Graphics/Panoramas/" + file, hue)
+  end
+
+  def setFog(file, hue = 0)
+    return _detach if file.nil?
+    _assignWarm("Graphics/Fogs/" + file, hue)
+  end
+
+  def _detach                       # park the plane without disposing the bitmap
+    @bitmap = nil
+    self.bitmap = nil if !self.disposed?
+  end
+
+  def _assignWarm(fullpath, hue)    # decode once per distinct [path,hue], then reuse
+    _detach
+    key = "#{fullpath}|#{hue}"
+    w = @warm[key]
+    w = nil if w && w.disposed?
+    w = AnimatedBitmap.new(fullpath, hue) unless w
+    @warm.delete(key); @warm[key] = w
+    @bitmap = w
+    while @warm.size > @warmMax
+      k = @warm.keys.first
+      ab = @warm.delete(k)
+      ab.dispose if ab && !ab.disposed? && !ab.equal?(@bitmap)
+    end
+  end
+end
+```
+
+This helps **any** map that cycles or swaps its panorama/fog, engine-wide. Note it caches the
+*decode*, not the plane's per-frame tile-blit — a scrolling plane still re-tiles as the map
+moves (that is stock `LargePlane` behaviour).
+
+### 2. Cull reflection sprites like character sprites
+
+`Spriteset_Map#update` already skips updating **character** sprites that are off-screen (an
+`in_range?`-style visibility test). But it updates **every reflection sprite unconditionally**
+each frame — a terrain scan plus a mirror-sprite rebuild — even for events far off-screen. On
+large maps (towns/cities) with many events this is pure waste, since an off-screen character's
+reflection is off-screen too.
+
+Fix: apply the same on-screen test the character loop uses to the reflection loop. Always
+update the player's reflection; skip out-of-range event reflections. Reuse whatever range
+check that Essentials version's character loop calls (shown here as `in_range?`).
+
+```ruby
+for sprite in @reflectedSprites
+  sprite.visible = true
+  sprite.visible = (@map == $game_map) if sprite.event == $game_player
+  ev = sprite.event
+  if ev.is_a?(Game_Event)
+    sprite.update if ev.trigger == 3 || ev.trigger == 4 || in_range?(ev)
+  else
+    sprite.update   # player reflection: always
+  end
+end
+```
+
+The range check's margin (Essentials uses several tiles beyond the screen) means a frozen
+reflection resumes updating well before it could scroll into view, so there is no visible
+pop-in. Neutral on small maps where everything is on-screen.
+
+After applying either patch, **repack** (next section) so the browser loads the new scripts.
 
 ## Repack after porting
 

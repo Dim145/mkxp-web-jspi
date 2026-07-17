@@ -168,7 +168,7 @@ If you serve the build directly from Apache (no container), drop
 guarded by `<IfModule>`, so a missing module is skipped rather than fatal. It:
 
 - Sets MIME types, including `application/wasm` for `.wasm` and
-  `application/octet-stream` for `.dat`/`.rxdata`.
+  `application/octet-stream` for `.dat`/`.rxdata`/`.rvdata`.
 - Rewrites requests to a pre-compressed `name.ext.br` when the client sends
   `Accept-Encoding: br`, re-advertising the correct `Content-Type` + `br`
   encoding for `.wasm.br`/`.js.br`/`.json.br`.

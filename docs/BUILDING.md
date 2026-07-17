@@ -5,9 +5,10 @@ This document explains how to build the **RGSS-Web** engine (a fork of
 [Ancurio/mkxp](https://github.com/Ancurio/mkxp); GPL-2.0-or-later) reproducibly with
 Docker.
 
-The engine is **game-agnostic**: `mkxp.wasm` reads `Game.ini` and
-`Data/Scripts.rxdata` at *runtime*. You only need to rebuild the engine when you change
-its C++ or the mruby VM. **Adding or updating a game is a re-packaging task
+The engine is **game-agnostic**: `mkxp.wasm` reads the game's scripts —
+`Data/Scripts.rxdata` (XP / RGSS1) or `Data/Scripts.rvdata` (VX / RGSS2) — at *runtime*.
+You only need to rebuild the engine when you change its C++ or the mruby VM (or to switch
+the pinned RGSS version — see `docs/RGSS2-VX.md`). **Adding or updating a game is a re-packaging task
 (`import-game.sh`), not an engine rebuild** — see `docs/BRING-YOUR-OWN-GAME.md`.
 
 ---

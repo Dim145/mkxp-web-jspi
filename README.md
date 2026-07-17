@@ -1,6 +1,6 @@
 # RGSS-Web (`mkxp-web-jspi`)
 
-Run RPG Maker XP (RGSS1) games in the browser — no plugin, no streaming server, no per-player backend CPU — by compiling the open-source **mkxp** engine to WebAssembly.
+Run RPG Maker XP (RGSS1) and VX (RGSS2) games in the browser — no plugin, no streaming server, no per-player backend CPU — by compiling the open-source **mkxp** engine to WebAssembly.
 
 ## What is this
 
@@ -8,11 +8,12 @@ RGSS-Web is a fork of [pulsejet/mkxp-web](https://github.com/pulsejet/mkxp-web) 
 
 The key change over upstream is in `src/graphics.cpp`: `FPSLimiter::delayTicks()` now calls `emscripten_sleep()`. Via ASYNCIFY/JSPI this unwinds the entire C+Ruby call stack once per frame, so a game's own blocking RGSS render loop (`loop { Graphics.update }`) yields to the browser naturally. You no longer have to rewrite the game's event loop into engine callbacks the way upstream mkxp-web required. On top of that, this fork migrates the build to JSPI and patches two mruby 2.1.2 VM bugs (escaping-proc environment unshare; a `super` + `alias` guard) in `extra/vm.c.patch`.
 
-The practical result: a full, heavily-scripted RGSS1 fan-game booted and played in the browser — something the stock upstream demo never demonstrated. This repository ships **no game and no assets** — it is a toolkit plus a porting guide for bringing your own game.
+The practical result: full, heavily-scripted games — both RGSS1 (RPG Maker XP) and RGSS2 (RPG Maker VX) — booted and played in the browser, something the stock upstream demo never demonstrated. This repository ships **no game and no assets** — it is a toolkit plus a porting guide for bringing your own game.
 
 ### Features
 
-- mkxp (C++ RGSS1 reimplementation) compiled to WASM via Emscripten, pinned emsdk **3.1.61**
+- mkxp (C++ RGSS1 **and RGSS2** reimplementation) compiled to WASM via Emscripten, pinned emsdk **3.1.61**
+- **RPG Maker XP (RGSS1) and VX (RGSS2)** — both renderers (`Window`/`Tilemap` vs `WindowVX`/`TilemapVX`) are built in and dispatched by RGSS version; see [docs/RGSS2-VX.md](docs/RGSS2-VX.md)
 - JSPI / `emscripten_sleep()` frame-yield — run a game's native RGSS loop unmodified
 - Patched mruby 2.1.2 for RGSS-heavy scripts
 - Reproducible Docker build; static-only hosting (zero server CPU per player)
@@ -26,11 +27,11 @@ The practical result: a full, heavily-scripted RGSS1 fan-game booted and played 
 
 ## Compatibility (honest)
 
-This is **not** a drag-and-drop "drop your game in and it runs" solution. Expect work that scales with how heavily your game is scripted:
+Both **RPG Maker XP (RGSS1)** and **VX (RGSS2)** games run (see [docs/RGSS2-VX.md](docs/RGSS2-VX.md) for the VX specifics). This is **not** a drag-and-drop "drop your game in and it runs" solution — expect work that scales with how heavily your game is scripted:
 
 | Tier | Games | What it takes |
 | --- | --- | --- |
-| **Green** | Vanilla / lightly-scripted RGSS1 games | Light mechanical porting + asset processing. Close to "just works." Not exhaustively tested across arbitrary games. |
+| **Green** | Vanilla / lightly-scripted games (XP or VX) | Light mechanical porting + asset processing. Close to "just works." Not exhaustively tested across arbitrary games. |
 | **Yellow** | Heavily-scripted frameworks (e.g. Pokémon Essentials-class) | **Substantial per-game mruby porting is still required**, even with the engine fixes and `rgss.rb` shims. This repo gives you a toolkit and a porting guide, not automation. |
 | **Red** | Plugin-heavy / custom-script games | Unknown per-game mruby walls. There is no pre-flight compatibility linter — you find the walls by hitting them. |
 
@@ -61,7 +62,7 @@ Output lands in `mkxp-web/build/`. You only rebuild the engine (`rebuild-jspi.sh
 
 ### 3. Import your game
 
-The engine WASM is game-agnostic: it reads `Game.ini` + `Data/Scripts.rxdata` at **runtime**, so adding a game is a re-packaging task, not a recompile. Mount your RMXP game read-only at `/game` and run:
+The engine WASM is game-agnostic: it reads the game's scripts — `Data/Scripts.rxdata` (XP) / `Data/Scripts.rvdata` (VX) — plus Graphics/Audio/Data at **runtime**, so adding a game is a re-packaging task, not a recompile. Mount your RPG Maker game read-only at `/game` and run:
 
 ```bash
 docker run --rm -it --platform linux/amd64 \
@@ -76,11 +77,11 @@ docker run --rm -it --platform linux/amd64 \
 For a script-heavy game, port `scripts_src/*.rb` to mruby ([docs/PORTING-mruby.md](docs/PORTING-mruby.md)), then repack and force the loader to refetch:
 
 ```bash
-ruby scripts_tool.rb pack scripts_src build/gameasync/Data/Scripts.rxdata
-# then re-run regen-mapping.sh (or bump the Scripts.rxdata ?h= hash in mapping.js)
+ruby scripts_tool.rb pack scripts_src build/gameasync/Data/Scripts.rxdata   # .rvdata for VX
+# then re-run regen-mapping.sh (or bump the Scripts.r?data ?h= hash in mapping.js)
 ```
 
-Games that need a non-stock internal resolution call `Graphics.resize_screen(w, h)` at boot; the default is stock RGSS1 640×480.
+Games that need a non-stock internal resolution call `Graphics.resize_screen(w, h)` at boot; the default follows the build's RGSS version (XP 640×480, VX 544×416 — set in `src/config.cpp`, see [docs/RGSS2-VX.md](docs/RGSS2-VX.md)).
 
 ### 4. Serve
 
@@ -95,11 +96,11 @@ Host `mkxp-web/build/` as static files. Requirements:
 
 ## How it works
 
-**mkxp → WASM + mruby.** mkxp is a C++ reimplementation of the RGSS1 interface (Graphics, Sprite, Bitmap, Table, RPG::* … backed by SDL2 / OpenGL ES / pixman). Emscripten compiles it to WebAssembly, and the embedded mruby VM executes the game's Ruby scripts. There is no CRuby: everything the game does runs through mruby, which is the source of the porting constraint above.
+**mkxp → WASM + mruby.** mkxp is a C++ reimplementation of the RGSS1 and RGSS2 interface (Graphics, Sprite, Bitmap, Table, `Window`/`WindowVX`, `Tilemap`/`TilemapVX`, RPG::* … backed by SDL2 / OpenGL ES / pixman); the version-appropriate `Window`/`Tilemap` is selected from `rgssVer` at boot. Emscripten compiles it to WebAssembly, and the embedded mruby VM executes the game's Ruby scripts. There is no CRuby: everything the game does runs through mruby, which is the source of the porting constraint above.
 
 **JSPI frame-yield.** A native RMXP game spins a blocking Ruby loop that never returns to the host — fine on Windows, fatal in a browser's single event loop. This fork's `FPSLimiter::delayTicks()` calls `emscripten_sleep()`, which under JSPI (`-s JSPI`) suspends and unwinds the whole C+Ruby stack back to the browser each frame, then resumes it on the next tick. The game keeps its own `loop { Graphics.update }` untouched; the engine handles the yielding. This is why you don't rewrite the event loop.
 
-**Game read at runtime = no per-game recompile.** The engine loads `Game.ini` and `Data/Scripts.rxdata` (plus Graphics/Audio/Data) at runtime from a virtual filesystem fed by the generated asset maps. Swapping games means re-running `import-game.sh`, not rebuilding `mkxp.wasm`.
+**Game read at runtime = no per-game recompile.** The engine loads `Data/Scripts.rxdata` (XP) / `Data/Scripts.rvdata` (VX) plus Graphics/Audio/Data at runtime from a virtual filesystem fed by the generated asset maps. (The RGSS version and scripts path are pinned in `src/config.cpp`, not parsed from `Game.ini` — see [docs/RGSS2-VX.md](docs/RGSS2-VX.md).) Swapping games means re-running `import-game.sh`, not rebuilding `mkxp.wasm`.
 
 ## Project status / maintenance
 
@@ -123,6 +124,6 @@ See [NOTICE](NOTICE) for third-party components and their licenses, and [CHANGES
 
 ## Legal note — bring your own game
 
-This repository contains **no game content**: no RPG Maker XP RTP assets, no Enterbrain RGSS runtime DLLs, no proprietary fonts, and no third-party game or franchise content of any kind. mkxp is an independent open-source reimplementation and uses none of Enterbrain's code.
+This repository contains **no game content**: no RPG Maker XP or VX RTP assets, no Enterbrain RGSS runtime DLLs, no proprietary fonts, and no third-party game or franchise content of any kind. mkxp is an independent open-source reimplementation and uses none of Enterbrain's code.
 
-You supply your own RMXP game files, and **you are solely responsible for their licensing and rights**. RPG Maker XP RTP assets are proprietary (Enterbrain EULA), and many fan-games carry both their framework's licensing and third-party intellectual property. Do not redistribute content you don't have the rights to through this engine.
+You supply your own RPG Maker game files, and **you are solely responsible for their licensing and rights**. RPG Maker XP/VX RTP assets are proprietary (Enterbrain EULA), and many fan-games carry both their framework's licensing and third-party intellectual property. Do not redistribute content you don't have the rights to through this engine.
