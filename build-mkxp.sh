@@ -81,6 +81,14 @@ fi
 echo ">>> Dependencies built. Building mkxp engine."
 cd /src/mkxp-web
 emcmake cmake .
+# Warm the emcc system-port cache SERIALLY before the parallel make. On a fresh emsdk the
+# first build must generate the SDL2/SDL2_image/SDL2_ttf/freetype/harfbuzz/ogg/vorbis/zlib
+# ports into the cache; under `make -j` several emcc processes race for the cache lock and
+# abort ("attempt to lock the cache while a parent process is holding the lock"). One serial
+# compile builds them all up front so the parallel make just reuses them.
+echo ">>> Warming emcc port cache (serial)"
+echo 'int main(){return 0;}' > /tmp/warm.c
+emcc /tmp/warm.c -s USE_SDL=2 -s USE_SDL_IMAGE=2 -s USE_SDL_TTF=2 -s USE_ZLIB=1 -s USE_OGG=1 -s USE_VORBIS=1 -o /tmp/warm.js || true
 emmake make -j"$(nproc)"
 
 mkdir -p build
