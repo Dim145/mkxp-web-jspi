@@ -214,6 +214,23 @@ end
 
 Grep: `grep -rn '\$!' scripts_src`. Also audit `$@` (backtrace global) similarly.
 
+### 3f. Space before a method call's `(`
+
+mruby's parser rejects a space between a method name and its argument parenthesis —
+`foo (x)` — with a **`SyntaxError`**, where MRI (1.8 and modern) tolerates it (parsing it
+as `foo((x))`). This shows up in hand-written event scripts.
+
+```ruby
+# before -> SyntaxError in mruby
+pbPokemonMart ([:POTION, 300])
+# after
+pbPokemonMart([:POTION, 300])
+```
+
+Grep: `grep -rnE '[A-Za-z0-9_?!]  +\(' scripts_src` (a method-name token followed by
+spaces then `(`). Ignore keywords where a space before `(` is legitimate (`if (…)`,
+`while (…)`, `return (…)`, `not (…)`).
+
 ---
 
 ## 4. "too big code block" — split oversized methods
@@ -288,7 +305,27 @@ game-specific fixes in the game's own scripts.
 
 ---
 
-## 6. The debugging loop
+## 6. Runtime behaviour differences (mruby ≠ MRI / RGSS 1.8)
+
+These are neither parse errors nor covered by a shim: the code *runs*, but mruby produces a
+different result (or a runtime exception) than RMXP's Ruby 1.8 / MRI, so you find them as
+wrong output or a mid-game crash. The common ones:
+
+| Construct | mruby behaviour | Fix |
+|---|---|---|
+| `2 ** 32`, `Integer#**` overflowing 32-bit | **raises `RangeError`** — mruby integers don't promote to Bignum, and `**` overflow is an error (not a wrap). | Build the value with shifts/masks, which wrap: `(a << 24) \| (b << 16) \| (c << 8) \| d`. |
+| `Array#to_s` | returns the **inspected** form, e.g. `"[1, 2, 3]"` (same as `inspect`). Ruby **1.8** returned the bare concatenation `"123"`. | Use `arr.join("")` (or `join(sep)`) where 1.8-style concatenation was assumed. |
+| `Array#nitems` | **removed** (gone since Ruby 1.9) → `NoMethodError`. | Re-add it (in your `rgss.rb` copy): `class Array; def nitems; compact.length; end; end`. |
+| Native `Bitmap#fill_rect(x,y,w,h,color)` | the C++ binding takes **integer** coordinates; floats (e.g. from `Math.sqrt`) are truncated, so computed sub-pixel rects can collapse/vanish. | `.floor` the coordinates before the call. |
+| Constant-name helpers returning a **Symbol** | some framework helpers (e.g. Essentials' `getConstantName`/`pbGetItemConst`) return a `Symbol` under mruby where 1.8 code treated the result as a `String`; `":" + sym` then raises `TypeError`. | Call `.to_s` before string operations. |
+
+> When a black screen has a backtrace, **read the backtrace** (the web harness logs it to
+> `window.__log`) instead of reasoning statically — these differences are invisible until the
+> exact line executes with the triggering data.
+
+---
+
+## 7. The debugging loop
 
 Porting is iterative: run, hit the next error, fix, repack, run again. The tools:
 

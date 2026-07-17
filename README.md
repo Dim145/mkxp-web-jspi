@@ -17,7 +17,11 @@ The practical result: a full, heavily-scripted RGSS1 fan-game booted and played 
 - Patched mruby 2.1.2 for RGSS-heavy scripts
 - Reproducible Docker build; static-only hosting (zero server CPU per player)
 - "Bring your own game" pipeline (`import-game.sh`) — no engine rebuild to add a game
-- Browser harness: keyboard + on-screen d-pad, fullscreen, Service Worker offline cache
+- Browser harness: keyboard + on-screen touch controls (D-pad/buttons **and** canvas
+  tap-to-move / clickable menus via the engine pointer), fullscreen toggle, and a resilient
+  on-demand asset loader (bounded retry then graceful skip — a missing asset can't hang the game)
+- Offline-ready: Service Worker cache, a one-click **"download the whole game" for full
+  offline play** (resumable, quota-aware, delta updates), and **PWA install** (Add-to-Home-Screen) with `manifest.webmanifest` + icons
 - Generic mruby/RGSS compatibility shims (`extra/rgss.rb`)
 
 ## Compatibility (honest)
@@ -85,7 +89,7 @@ Host `mkxp-web/build/` as static files. Requirements:
 - Serve `.wasm` with `Content-Type: application/wasm` (enables `WebAssembly.instantiateStreaming`).
 - Brotli/gzip + `Cache-Control` are recommended.
 - **Do not** add COOP/COEP headers. This build is single-threaded (no pthreads / no `SharedArrayBuffer`), so cross-origin isolation is unnecessary.
-- Production should be **HTTPS**: the Service Worker (offline + fast reloads) needs a secure context.
+- Production should be **HTTPS**: the Service Worker (fast reloads, the optional "download for offline" button, and PWA install) needs a secure context.
 
 `deploy/` ships a Caddy container (`deploy/Dockerfile`, `deploy/Caddyfile`, `deploy/docker-compose.yml`) with correct wasm MIME, Brotli, and caching preconfigured; `deploy/apache.htaccess` is an Apache alternative. See [docs/DEPLOY.md](docs/DEPLOY.md).
 
@@ -102,7 +106,7 @@ Host `mkxp-web/build/` as static files. Requirements:
 This is a revival of an abandoned 2023 upstream proof-of-concept, brought to the point of actually running a real, script-heavy game. It is currently **single-maintainer**. A few things worth knowing before you rely on it:
 
 - The toolchain is pinned to **emsdk 3.1.61** and **mruby 2.1.2** with local patches; upgrading either is known to be fragile.
-- **JSPI is a young browser feature** (needs a recent Chromium-based browser); expect rough edges.
+- **JSPI is a young browser feature**: today it ships on desktop **Chrome/Edge 137+** and **Firefox 153+**. **Mobile browsers (Chrome for Android, iOS Safari) do not ship JSPI yet**, so the game does not run on phones/tablets for now — the on-screen touch controls are in place for when it lands. Expect rough edges.
 - **mruby-only is structural**, not a TODO — there is no plan to run MRI in the browser.
 
 Contributions welcome — issues, ports, shims, and compatibility notes especially.

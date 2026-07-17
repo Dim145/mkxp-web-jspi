@@ -61,6 +61,32 @@ development). Two ways to get TLS:
 
 ---
 
+## Service Worker & offline caching
+
+`sw.js` uses two Cache-Storage buckets:
+
+- a **versioned shell cache** (`rgss-web-v*`) for the un-versioned shell
+  (`index.html`, `sw.js`, `mapping.js`, `js/*`), served **network-first** — a redeploy is
+  picked up as soon as the client is back online;
+- a **stable asset cache** (`rgss-web-assets`) for the engine (`?v=`) and content-hashed
+  media (`?h=`), served **cache-first**. It is **not** tied to the version cache, so it is
+  never purged by a redeploy — a downloaded full-offline copy survives new deployments.
+
+The harness also exposes two optional buttons (top-right of `index.html`):
+
+- **Download game** — bulk-precaches every asset into the stable cache for full offline
+  play; resumable, quota-aware, and does **delta updates** (only changed `?h=` files are
+  refetched, stale ones pruned).
+- **Install app** — PWA install via `beforeinstallprompt` (Add-to-Home-Screen / standalone),
+  backed by `manifest.webmanifest` + `icon-*.png`. Ship your own icons/manifest name per game.
+
+**Redeploying is transparent:** bump `BUILD_VER` in `index.html` (engine) and the changed
+assets' `?h=` hashes in `mapping.js` — clients fetch the new bytes, and the version-URL scheme
+means a stale entry is never served for changed content. No server-side cache action is needed
+beyond the `Cache-Control` headers above.
+
+---
+
 ## Option A — Caddy container (recommended)
 
 The `deploy/` directory ships a hardened, self-contained Caddy image. It is a
