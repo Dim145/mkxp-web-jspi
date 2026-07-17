@@ -73,6 +73,14 @@
       })();
     </script>
     <link rel="manifest" href="manifest.webmanifest">
+    <!-- PWA / offline-install icons (replace with your game's artwork). -->
+    <link rel="icon" type="image/png" sizes="32x32" href="favicon-32.png">
+    <link rel="icon" type="image/png" sizes="16x16" href="favicon-16.png">
+    <link rel="apple-touch-icon" href="apple-touch-icon.png">
+    <meta name="theme-color" content="#4f46e5">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black">
     <meta name="viewport" content="width=device-width, initial-scale=1, minimum-scale=1, maximum-scale=1, user-scalable=no">
     <script src="js/localforage.min.js"></script>
     <script src="js/drive.js"></script>
@@ -211,6 +219,62 @@
         #ap-ka {
             transform: translate(-20%, 70%);
         }
+
+        /* Offline download + PWA install buttons (top-right). */
+        #offlinebtns {
+            position: fixed;
+            top: 8px;
+            right: 8px;
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+            opacity: 0.4;
+            z-index: 10;
+        }
+        #offlinebtns:hover { opacity: 1; }
+        #offlinebtns button {
+            font: bold 11px/1 sans-serif;
+            color: #fff;
+            background: rgba(0,0,0,0.65);
+            border: 1px solid #999;
+            border-radius: 4px;
+            padding: 5px 8px;
+            cursor: pointer;
+            white-space: nowrap;
+        }
+        #offlinebtns button:hover { background: rgba(0,0,0,0.9); }
+        #offlinebtns button#dlbtn { border-color: #4a90d9; }
+        #offlinebtns button#dlbtn.done { border-color: #46b34a; color: #9be89e; }
+        #offlinebtns button#dlbtn:disabled { opacity: 0.7; cursor: default; }
+        #offlinebtns button#installbtn { border-color: #d94a4a; }
+        #dlprogress {
+            position: fixed;
+            top: 90px;
+            right: 8px;
+            width: 190px;
+            font: bold 11px/1.4 sans-serif;
+            color: #fff;
+            background: rgba(0,0,0,0.75);
+            border: 1px solid #4a90d9;
+            border-radius: 4px;
+            padding: 6px 8px;
+            z-index: 10;
+        }
+        #dlbar {
+            height: 8px;
+            background: rgba(255,255,255,0.15);
+            border-radius: 4px;
+            overflow: hidden;
+            margin-bottom: 4px;
+        }
+        #dlbarfill {
+            height: 100%;
+            width: 0%;
+            background: #4a90d9;
+            transition: width 0.2s linear;
+        }
+        #dlprogress.error { border-color: #d94a4a; }
+        #dlprogress.error #dlbarfill { background: #d94a4a; }
     </style>
   </head>
   <body>
@@ -247,6 +311,15 @@
             <path fill="white" d="M312.1,602.7L151.5,763.3L52.7,664C29.2,664,10,683.2,10,706.8v240.7c0,23.6,19.2,42.8,42.7,42.8h239.8c23.5,0,42.6-19.2,42.6-42.8l-97.4-97.9l160.7-160.7c23.9-23.9,23.9-62.4,0-86.3C374.6,578.9,336,578.9,312.1,602.7L312.1,602.7z"/>
         </g>
         </svg>
+    </div>
+
+    <div id="offlinebtns">
+        <button type="button" id="dlbtn" onclick="downloadGame()" title="Download the whole game into this browser so it can be played fully offline, even if the server is down">&#x2B07; Download game</button>
+        <button type="button" id="installbtn" onclick="installGame()" title="Install the game as an app (launches full-screen from the desktop / home screen)" style="display:none">&#x1F4F2; Install app</button>
+    </div>
+    <div id="dlprogress" style="display:none">
+        <div id="dlbar"><div id="dlbarfill"></div></div>
+        <span id="dltext"></span>
     </div>
 
     <script type='text/javascript'>
@@ -396,6 +469,261 @@
             }
         }
         window.toggleFullscreen = fullscreen;
+
+        // ============================================================================
+        // Offline "Download game" — full offline install.
+        // Bulk-fetches every game asset into a stable Cache Storage bucket (ASSET_CACHE in
+        // sw.js) so the game can boot and play with the server down / no network. Resumable
+        // (skips anything already cached), bounded-concurrency, quota-aware, and prunes assets
+        // from older versions on a re-run (delta update). Needs the Service Worker (sw.js)
+        // registered and mapping.js loaded (mappingArray / mapping globals).
+        // ============================================================================
+        var OFFLINE_ASSET_CACHE = 'rgss-web-assets';   // MUST match ASSET_CACHE in sw.js
+        var OFFLINE_FLAG_KEY = namespace + '__offline';
+
+        // Engine + shell files that are NOT listed in mappingArray but are required to boot.
+        function offlineShellUrls() {
+            return [
+                'mkxp.wasm?v=' + BUILD_VER,
+                'mkxp.js?v=' + BUILD_VER,
+                'gameasync/bitmap-map.js',
+                'gameasync/mapping.js',
+                'js/localforage.min.js',
+                'js/drive.js',
+                'js/dpad.js',
+                'js/webbgm.js',
+                'manifest.webmanifest',
+                'icon-192.png',
+                'icon-512.png',
+                'icon-512-maskable.png',
+                'apple-touch-icon.png',
+                'favicon-32.png',
+                'favicon-16.png',
+                'index.html',
+                location.pathname,              // navigation document for offline reloads
+            ];
+        }
+
+        // Every content-hashed asset URL. mappingArray entries are [key, "Path?h=<hash>"];
+        // folder markers have a value ending in "h=" (no hash after) and are skipped.
+        function offlineAssetUrls() {
+            var urls = [];
+            for (var i = 0; i < mappingArray.length; i++) {
+                var v = mappingArray[i][1];
+                if (!v || v.endsWith('h=')) continue;   // folder marker, not a real file
+                urls.push('gameasync/' + v);
+            }
+            return urls;
+        }
+
+        // A cheap content signature (BUILD_VER + every asset hash) so a downloaded copy can be
+        // told apart from a stale one even on content-only redeploys (asset hashes change,
+        // BUILD_VER unchanged). 32-bit djb2 -> short hex; only equality matters.
+        function offlineContentSig() {
+            var s = BUILD_VER + '|' + mappingArray.length + '|';
+            var h = 5381;
+            for (var i = 0; i < mappingArray.length; i++) {
+                var v = mappingArray[i][1] || '';
+                for (var j = 0; j < v.length; j++) { h = ((h << 5) + h + v.charCodeAt(j)) | 0; }
+            }
+            return s + (h >>> 0).toString(16);
+        }
+
+        function setDlUI(state, pct, msg) {
+            var btn = document.getElementById('dlbtn');
+            var prog = document.getElementById('dlprogress');
+            var fill = document.getElementById('dlbarfill');
+            var text = document.getElementById('dltext');
+            if (!btn || !prog) return;
+            prog.style.display = 'block';
+            prog.classList.toggle('error', state === 'error');
+            if (typeof pct === 'number') fill.style.width = pct + '%';
+            if (msg != null) text.textContent = msg;
+            if (state === 'progress') {
+                btn.disabled = true;
+                btn.textContent = '⏳ Downloading…';
+            } else if (state === 'done') {
+                btn.disabled = false;
+                btn.classList.add('done');
+                btn.textContent = '✓ Game downloaded';
+            } else if (state === 'error') {
+                btn.disabled = false;
+                btn.classList.remove('done');
+                btn.textContent = '⚠ Retry download';
+            }
+        }
+
+        async function downloadGame() {
+            if (typeof WebAssembly.Suspending !== 'function') {
+                alert('This browser does not support JSPI, so the game cannot run here and downloading would be pointless.\n\nUse Chrome/Edge 137+ or Firefox 153+ on desktop.');
+                return;
+            }
+            if (!('caches' in window)) {
+                alert('Offline storage (Cache Storage) is not available in this browser.');
+                return;
+            }
+            try {
+                var persisted = false;
+                if (navigator.storage && navigator.storage.persist) {
+                    try { persisted = await navigator.storage.persist(); } catch (e) {}
+                }
+                var assetUrls = offlineAssetUrls();
+                var allUrls = assetUrls.concat(offlineShellUrls());
+                var total = allUrls.length;
+
+                var quotaNote = '';
+                if (navigator.storage && navigator.storage.estimate) {
+                    try {
+                        var est = await navigator.storage.estimate();
+                        if (est && est.quota) quotaNote = ' (free space ~' + Math.round(est.quota / 1048576) + ' MB)';
+                    } catch (e) {}
+                }
+                if (!confirm('Download the whole game (' + total + ' files) for offline play?' + quotaNote + '\n\nYou can keep playing while it downloads.')) {
+                    return;
+                }
+
+                setDlUI('progress', 0, 'Preparing…');
+                var cache = await caches.open(OFFLINE_ASSET_CACHE);
+                var done = 0, failed = 0, aborted = false, quotaHit = false;
+
+                async function fetchOne(url) {
+                    if (aborted) return;
+                    try {
+                        // Resume: skip only if already in the STABLE bucket, so the full copy
+                        // always lands in ASSET_CACHE (survives a CACHE_VERSION bump/purge).
+                        if (await cache.match(url)) { done++; return; }
+                        var resp = await fetch(url);
+                        if (!resp || !resp.ok) { failed++; done++; return; }
+                        await cache.put(url, resp.clone());
+                        done++;
+                    } catch (e) {
+                        var q = e && (e.name === 'QuotaExceededError' || (e.message && /quota/i.test(e.message)));
+                        if (q) { quotaHit = true; aborted = true; return; }
+                        failed++; done++;
+                    }
+                }
+
+                var idx = 0, CONC = 8, lastPaint = -1;
+                async function worker() {
+                    while (!aborted && idx < total) {
+                        await fetchOne(allUrls[idx++]);
+                        var pct = Math.round((done / total) * 100);
+                        if (pct !== lastPaint) {
+                            lastPaint = pct;
+                            setDlUI('progress', pct, done + ' / ' + total + ' files' + (failed ? ' — ' + failed + ' failed' : ''));
+                        }
+                    }
+                }
+                var runners = [];
+                for (var k = 0; k < CONC; k++) runners.push(worker());
+                await Promise.all(runners);
+
+                if (quotaHit) {
+                    setDlUI('error', null, 'Not enough disk space. Free some up and retry — progress is kept.');
+                    return;
+                }
+
+                // Delta update: drop cached entries no longer referenced (old asset hashes,
+                // previous engine version). Guarded so a failed mapping load can't wipe the cache.
+                if (assetUrls.length > 100) {
+                    try {
+                        var wanted = {};
+                        allUrls.forEach(function (u) { wanted[new URL(u, location.href).href] = 1; });
+                        var keys = await cache.keys();
+                        for (var j = 0; j < keys.length; j++) {
+                            if (!wanted[keys[j].url]) { try { await cache.delete(keys[j]); } catch (e) {} }
+                        }
+                    } catch (e) {}
+                }
+
+                try {
+                    await localforage.setItem(OFFLINE_FLAG_KEY,
+                        { ver: BUILD_VER, sig: offlineContentSig(), count: total, ts: Date.now(), persisted: persisted });
+                } catch (e) {}
+
+                var msg = persisted ? 'Game downloaded — playable offline (storage protected).'
+                                    : 'Game downloaded — playable offline.';
+                if (failed) msg = 'Finished (' + failed + ' file(s) not fetched, will load in-game).';
+                setDlUI('done', 100, msg);
+            } catch (e) {
+                console.error('downloadGame failed', e);
+                setDlUI('error', null, 'Failed: ' + (e && e.message ? e.message : e));
+            }
+        }
+
+        // Reflect a prior install in the button label on load.
+        (function () {
+            if (!('caches' in window) || typeof localforage === 'undefined') return;
+            localforage.getItem(OFFLINE_FLAG_KEY).then(function (rec) {
+                var btn = document.getElementById('dlbtn');
+                if (!rec || !btn) return;
+                var current = rec.sig ? (rec.sig === offlineContentSig()) : (rec.ver === BUILD_VER);
+                if (current) {
+                    btn.classList.add('done');
+                    btn.textContent = '✓ Game downloaded';
+                    btn.title = 'Game already downloaded on this browser. Click to verify / complete.';
+                } else {
+                    btn.textContent = '↻ Update game';
+                    btn.title = 'A new version is available. Click to download the changed files.';
+                }
+            }).catch(function () {});
+        })();
+
+        // ============================================================================
+        // PWA install ("Install app") — Add to Home Screen / standalone.
+        // Chrome/Edge fire beforeinstallprompt once installability is met (manifest+icons,
+        // SW with a fetch handler, https/localhost); we capture it and drive it from our
+        // own button. iOS Safari has no such event, so there we show the manual steps.
+        // ============================================================================
+        var __deferredInstallPrompt = null;
+
+        function isStandalone() {
+            try {
+                return (window.matchMedia && (window.matchMedia('(display-mode: standalone)').matches ||
+                                              window.matchMedia('(display-mode: fullscreen)').matches))
+                    || window.navigator.standalone === true;
+            } catch (e) { return false; }
+        }
+
+        window.addEventListener('beforeinstallprompt', function (e) {
+            e.preventDefault();
+            __deferredInstallPrompt = e;
+            var b = document.getElementById('installbtn');
+            if (b && !isStandalone()) b.style.display = '';
+        });
+
+        window.addEventListener('appinstalled', function () {
+            __deferredInstallPrompt = null;
+            var b = document.getElementById('installbtn');
+            if (b) b.style.display = 'none';
+        });
+
+        async function installGame() {
+            if (!__deferredInstallPrompt) {
+                alert('Install the game as an app:\n\n' +
+                      '• iPhone / iPad (Safari): Share button ⬆, then "Add to Home Screen".\n' +
+                      '• Desktop (Chrome / Edge): install icon ⊕ in the address bar.\n\n' +
+                      'Tip: "Download game" first = fully offline once installed.');
+                return;
+            }
+            var b = document.getElementById('installbtn');
+            __deferredInstallPrompt.prompt();
+            try {
+                var choice = await __deferredInstallPrompt.userChoice;
+                if (choice && choice.outcome === 'accepted' && b) b.style.display = 'none';
+            } catch (e) {}
+            __deferredInstallPrompt = null;
+        }
+
+        (function () {
+            var b = document.getElementById('installbtn');
+            if (!b) return;
+            if (isStandalone()) { b.style.display = 'none'; return; }
+            var ua = navigator.userAgent || '';
+            var isIOS = /iPad|iPhone|iPod/.test(ua) ||
+                        (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+            if (isIOS) b.style.display = '';
+        })();
 
         function preloadInit() {
             // Files read SYNCHRONOUSLY at boot (via File.open, not the async load_data
