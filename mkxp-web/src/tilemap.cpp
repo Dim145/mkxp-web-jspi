@@ -632,6 +632,43 @@ struct TilemapPrivate
 
 		const StaticRect *pieceRect = &autotileRects[subInd*4];
 
+		/* WEB PORT (perf): most autotile tiles use the "open field" pattern whose four
+		 * 16x16 sub-pieces sample a contiguous 32x32 atlas block (open water/grass). For
+		 * those, emit ONE 32x32 quad instead of four 16x16 pieces -- visually identical
+		 * (same texels over the same area) but 1/4 the vertices, so buildQuadArray, the
+		 * tile VBO and the (branchy, animated) tilemap vertex shader all do 1/4 the work
+		 * on water-heavy maps. Edge/corner patterns have non-contiguous pieces and keep
+		 * the 4-piece path below, so shorelines/borders are byte-for-byte unchanged.
+		 * contig[] is computed once from the static autotileRects table. */
+		static bool contig[48];
+		static bool contigInit = false;
+		if (!contigInit)
+		{
+			for (int p = 0; p < 48; ++p)
+			{
+				const StaticRect *r = &autotileRects[p*4];
+				contig[p] = (r[1].x == r[0].x+16 && r[1].y == r[0].y    &&
+				             r[2].x == r[0].x    && r[2].y == r[0].y+16  &&
+				             r[3].x == r[0].x+16 && r[3].y == r[0].y+16);
+			}
+			contigInit = true;
+		}
+
+		if (contig[subInd])
+		{
+			FloatRect texRect(pieceRect[0].x, pieceRect[0].y, 31, 31);
+			texRect.y += atInd * autotileH;
+			FloatRect posRect(x*32, y*32, 32, 32);
+
+			SVertex v[4];
+			Quad::setTexPosRect(v, texRect, posRect);
+
+			for (size_t i = 0; i < 4; ++i)
+				array->push_back(v[i]);
+
+			return;
+		}
+
 		/* Iterate over the 4 tile pieces */
 		for (int i = 0; i < 4; ++i)
 		{

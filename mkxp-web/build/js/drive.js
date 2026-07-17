@@ -36,6 +36,16 @@ window.loadFileAsync = function(fullPath, bitmap, callback) {
     // Main loading function
     const load = (cb1) => {
         getLazyAsset(iurl, filename, (data) => {
+            // WEB PORT (fix): getLazyAsset gave up (missing/failed asset). Unblock the game
+            // and continue WITHOUT the file instead of hanging. Don't mark it loaded, so a
+            // later request can retry (the failure may have been transient). The FS dummy
+            // stays; a cry SE reading it just fails to decode -> no sound, no freeze.
+            if (!data) {
+                if (!bitmap && window.setNotBusy) window.setNotBusy();
+                callback();
+                if (cb1) cb1();
+                return;
+            }
             FS.createPreloadedFile(path, filename, new Uint8Array(data), true, true, function() {
                 window.fileAsyncCache[mappingKey] = 1;
                 if (!bitmap && window.setNotBusy) window.setNotBusy();
@@ -87,20 +97,34 @@ window.loadFileAsync = function(fullPath, bitmap, callback) {
 
 
 window.saveFile = function(filename, localOnly) {
+    // WEB PORT / CRITICAL FIX: FS.readFile below closes the file descriptor, and the
+    // FS.close persist hook (installSavePersistHook in index.html) re-fires on that
+    // close -> calls saveFile again -> FS.readFile -> close -> ... INFINITE RECURSION
+    // -> "Maximum call stack size exceeded". That froze the boot (the save is read
+    // during the restore / title "Continue" check) AND silently aborted every local
+    // save (the overflow threw before localforage.setItem ran). Re-entrancy guard: the
+    // nested call from the close hook is a no-op, so the outer call reads once and
+    // persists normally.
+    if (window.__inSaveFile) return;
     const fpath = '/game/' + filename;
     if (!FS.analyzePath(fpath).exists) return;
 
-    const buf = FS.readFile(fpath);
-    localforage.setItem(namespace + filename, buf);
+    window.__inSaveFile = true;
+    try {
+        const buf = FS.readFile(fpath);
+        localforage.setItem(namespace + filename, buf);
 
-    localforage.getItem(namespace, function(err, res) {
-        if (err || !res) res = {};
-        res[filename] = { t: Number(FS.stat(fpath).mtime) };
-        localforage.setItem(namespace, res);
-    });
+        localforage.getItem(namespace, function(err, res) {
+            if (err || !res) res = {};
+            res[filename] = { t: Number(FS.stat(fpath).mtime) };
+            localforage.setItem(namespace, res);
+        });
 
-    if (!localOnly) {
-        (window.saveCloudFile || (()=>{}))(filename, buf);
+        if (!localOnly) {
+            (window.saveCloudFile || (()=>{}))(filename, buf);
+        }
+    } finally {
+        window.__inSaveFile = false;
     }
 };
 
@@ -111,8 +135,14 @@ window.saveFile = function(filename, localOnly) {
 // the save-check -> "Continue" often missing after a (hard) reload even though the
 // save was in IndexedDB.
 var loadFiles = function() {
-    (window.loadCloudFiles || (()=>{}))();
-    return new Promise(function(resolve) {
+    // WEB PORT: run the (possibly async) cloud restore FIRST and WAIT for it, so a server
+    // save lands in MEMFS before the local restore below -- whose no-clobber guard
+    // (if !exists) then keeps the cloud copy ("NAS first"). With no cloud hook this
+    // resolves immediately and the restore is purely local, exactly as before.
+    var cloud = null;
+    try { cloud = window.loadCloudFiles ? window.loadCloudFiles() : null; } catch (e) { console.error(e); }
+    return Promise.resolve(cloud).catch(function (e) { console.error(e); }).then(function () {
+      return new Promise(function(resolve) {
         localforage.getItem(namespace, function(err, folder) {
             if (err || !folder) { return resolve(); }
             console.log('Locally stored savefiles:', folder);
@@ -136,6 +166,7 @@ var loadFiles = function() {
                 });
             });
         });
+      });
     });
 }
 
@@ -218,53 +249,76 @@ window.fileLoadedAsync = function(file) {
 };
 
 var activeStreams = [];
-function getLazyAsset(url, filename, callback, noretry) {
+function getLazyAsset(url, filename, callback, noretry, attempt) {
+    // WEB PORT (fix): previously a fetch that did NOT return HTTP 200-399 -- a 404, or a
+    // status-0 / network-error / aborted response (e.g. a transient failure through the
+    // service worker) -- never called the callback (onreadystatechange only handled the
+    // success range), and the 10s watchdog just re-issued the SAME request forever
+    // (on-demand loads pass no `noretry`). That froze the whole game: the JSPI file-load
+    // never resolved and the spinner stuck on "<file> - start". THIS was the cry-audio
+    // hang. Now: handle every terminal outcome, retry a bounded number of times, then GIVE
+    // UP with callback(null) so the caller can continue without the asset (a missing/failed
+    // cry SE is non-fatal).
+    attempt = attempt || 1;
+    const MAX_ATTEMPTS = noretry ? 1 : 3;
     const xhr = new XMLHttpRequest();
     xhr.responseType = "arraybuffer";
     const pdiv = document.getElementById("progress");
     let abortTimer = 0;
+    let settled = false;
 
-    const end = (message) => {
-        pdiv.innerHTML = `${filename} - ${message}`;
-        activeStreams.splice(activeStreams.indexOf(filename), 1);
-        if (activeStreams.length === 0) {
-            pdiv.style.opacity = '0';
-        }
+    const clearStream = () => {
+        const i = activeStreams.indexOf(filename);
+        if (i !== -1) activeStreams.splice(i, 1);
+        if (activeStreams.length === 0) pdiv.style.opacity = '0';
+    };
+
+    const succeed = (data) => {
+        if (settled) return; settled = true;
         clearTimeout(abortTimer);
-    }
+        pdiv.innerHTML = `${filename} - done`;
+        clearStream();
+        callback(data);
+    };
 
-    const retry = () => {
-        xhr.abort();
-
-        if (noretry) {
-            end('skip'); callback(null);
+    const fail = (why) => {
+        if (settled) return; settled = true;
+        clearTimeout(abortTimer);
+        try { xhr.abort(); } catch (e) {}
+        clearStream();
+        if (attempt < MAX_ATTEMPTS) {
+            getLazyAsset(url, filename, callback, noretry, attempt + 1);
         } else {
-            activeStreams.splice(activeStreams.indexOf(filename), 1);
-            getLazyAsset(url, filename, callback);
+            console.warn("getLazyAsset: giving up on", url, "(" + why + ") after", attempt, "attempt(s)");
+            pdiv.innerHTML = `${filename} - skip`;
+            if (activeStreams.length === 0) pdiv.style.opacity = '0';
+            callback(null);
         }
-    }
+    };
 
     xhr.onreadystatechange = function() {
-        if (xhr.readyState == XMLHttpRequest.DONE && xhr.status >= 200 && xhr.status < 400) {
-            end('done');
-            callback(xhr.response);
-        }
-    }
+        if (xhr.readyState !== XMLHttpRequest.DONE) return;
+        if (xhr.status >= 200 && xhr.status < 400) succeed(xhr.response);
+        else fail("status " + xhr.status);
+    };
+    xhr.onerror = function() { fail("network error"); };
     xhr.onprogress = function (event) {
+        if (settled) return;
         const loaded = Math.round(event.loaded / 1024);
         const total = Math.round(event.total / 1024);
         pdiv.innerHTML = `${filename} - ${loaded}KB / ${total}KB`;
-
         clearTimeout(abortTimer);
-        abortTimer = setTimeout(retry, 10000);
+        abortTimer = setTimeout(() => fail("stalled"), 10000);
     };
-    xhr.open('GET', url);
-    xhr.send();
+
+    try {
+        xhr.open('GET', url);
+        xhr.send();
+    } catch (e) { fail("open/send threw"); return; }
 
     pdiv.innerHTML = `${filename} - start`;
     pdiv.style.opacity = '0.5';
+    if (activeStreams.indexOf(filename) === -1) activeStreams.push(filename);
 
-    activeStreams.push(filename);
-
-    abortTimer = setTimeout(retry, 10000);
+    abortTimer = setTimeout(() => fail("start timeout"), 10000);
 }

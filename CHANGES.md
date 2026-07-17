@@ -30,6 +30,11 @@ the significant changes and the date they were made:
 **Input / rendering**
 - `src/input.cpp` — static keyboard bindings + `web_set_scancode` for browser keyboard input.
 - `src/config.cpp`, `src/main.cpp` — request WebGL2 / GLES3; frame-skip and skip-storm fixes.
+- `src/tilemap.cpp` — autotile perf: collapse the four 16×16 sub-pieces of "open field"
+  autotile patterns (whose pieces sample a contiguous 32×32 atlas block, e.g. open
+  water/grass) into a single 32×32 quad — pixel-identical but ¼ the vertices, so the tile
+  VBO build and the animated tilemap vertex shader do ¼ the work on water/grass-heavy maps.
+  Edge/corner patterns have non-contiguous pieces and keep the 4-piece path.
 
 **Audio (frame-independent BGM)**
 - `src/emscripten.cpp/.hpp`, `binding-mruby/audio-binding.cpp` — added `Audio.web_bgm_play/
@@ -44,9 +49,17 @@ the significant changes and the date they were made:
 
 **Browser harness & tooling**
 - `build/index.html`, `extra/shell.html`, `build/js/*`, `build/sw.js` — unthrottled Web
-  Worker timers, keyboard + on-screen dpad input, fullscreen toggle, Service Worker
-  offline cache, async hashed-asset loading, and dropping the WebGL context on unload so a
-  reload reclaims GPU memory promptly.
+  Worker timers, keyboard + on-screen touch input (D-pad/buttons dispatch real
+  `KeyboardEvent.code`; canvas taps/clicks drive the engine pointer via `web_set_mouse` for
+  clickable menus / tap-to-move), fullscreen toggle, and dropping the WebGL context on
+  unload so a reload reclaims GPU memory promptly.
+- `build/js/drive.js` — resilient on-demand asset loader: bounded retry on transient
+  fetch failures then a graceful give-up (`callback(null)`) so a missing/failed asset can't
+  hang the game; save-persist re-entrancy guard; cloud-restore-first (NAS) save loading.
+- `build/sw.js`, `build/index.html` — Service Worker offline cache split into a versioned
+  shell cache + a stable asset cache, plus an optional "download the whole game" button
+  (bulk-precache for full offline play, resumable + delta updates) and a PWA install button
+  (`beforeinstallprompt`); `manifest.webmanifest` + icons for Add-to-Home-Screen.
 - `extra/rgss.rb` — generic mruby/RGSS compatibility shims (Win32API stub, Thread/Mutex
   no-ops, ENV/Dir stubs, streaming Zlib, ObjectSpace stubs, File byte helpers).
 - `deploy/` — containerized static serving (Caddy: Brotli, correct wasm MIME, caching).
