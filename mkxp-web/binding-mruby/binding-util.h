@@ -48,6 +48,8 @@ enum CommonSymbol
 	CSautotiles,
 	CSmap_data,
 	CSflash_data,
+	CSflags,
+	CSbitmaps,
 	CSpriorities,
 	CSwindowskin,
 	CScontents,

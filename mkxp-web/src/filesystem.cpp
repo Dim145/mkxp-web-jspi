@@ -33,6 +33,8 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <stdint.h>
+#include <string>
 #include <algorithm>
 #include <vector>
 #include <stack>
@@ -581,6 +583,106 @@ struct OpenReadEnumData
 	{}
 };
 
+/* WEB PORT: Unicode NFC/NFD tolerance for asset filenames.
+ *
+ * macOS/APFS returns directory listings in Unicode NFD: a voiced kana such as ブ (U+30D6) is
+ * stored decomposed as フ (U+30D5) + combining ゙ (U+3099). RPG Maker's Marshal'd data, however,
+ * references paths in NFC (precomposed). The byte-wise strncmp in openReadEnumCB below then never
+ * matches for such names, so e.g. the plains "ブタ" battler cannot resolve Graphics/Characters/
+ * ブタ_1 -- openRead throws NoFileError, the script layer retries every frame, and the battle
+ * freezes on a black screen.
+ *
+ * Fix: canonicalise BOTH the requested name and each enumerated name to NFD (decompose the ~90
+ * precomposed voiced/semi-voiced kana) before comparing. Non-kana bytes pass through untouched,
+ * so ASCII and already-NFD names are unaffected. This is a targeted normaliser (kana only) -- the
+ * only decomposable characters that appear in this game's asset names -- avoiding an ICU/utf8proc
+ * dependency in the WASM build. */
+static void appendUTF8(std::string &out, uint32_t cp)
+{
+	if (cp < 0x80)
+		out += (char)cp;
+	else if (cp < 0x800) {
+		out += (char)(0xC0 | (cp >> 6));
+		out += (char)(0x80 | (cp & 0x3F));
+	} else if (cp < 0x10000) {
+		out += (char)(0xE0 | (cp >> 12));
+		out += (char)(0x80 | ((cp >> 6) & 0x3F));
+		out += (char)(0x80 | (cp & 0x3F));
+	} else {
+		out += (char)(0xF0 | (cp >> 18));
+		out += (char)(0x80 | ((cp >> 12) & 0x3F));
+		out += (char)(0x80 | ((cp >> 6) & 0x3F));
+		out += (char)(0x80 | (cp & 0x3F));
+	}
+}
+
+/* If cp is a precomposed voiced/semi-voiced kana, set (base, mark) to its NFD decomposition
+ * and return true; otherwise return false. */
+static bool decomposeKana(uint32_t cp, uint32_t &base, uint32_t &mark)
+{
+	switch (cp) {
+	/* Katakana voiced (dakuten): precomposed form sits one code point after its base */
+	case 0x30AC: case 0x30AE: case 0x30B0: case 0x30B2: case 0x30B4:
+	case 0x30B6: case 0x30B8: case 0x30BA: case 0x30BC: case 0x30BE:
+	case 0x30C0: case 0x30C2: case 0x30C5: case 0x30C7: case 0x30C9:
+	case 0x30D0: case 0x30D3: case 0x30D6: case 0x30D9: case 0x30DC:
+	/* Hiragana voiced */
+	case 0x304C: case 0x304E: case 0x3050: case 0x3052: case 0x3054:
+	case 0x3056: case 0x3058: case 0x305A: case 0x305C: case 0x305E:
+	case 0x3060: case 0x3062: case 0x3065: case 0x3067: case 0x3069:
+	case 0x3070: case 0x3073: case 0x3076: case 0x3079: case 0x307C:
+		base = cp - 1; mark = 0x3099; return true;
+	/* Katakana / Hiragana semi-voiced (handakuten): two code points after the base (ha row) */
+	case 0x30D1: case 0x30D4: case 0x30D7: case 0x30DA: case 0x30DD:
+	case 0x3071: case 0x3074: case 0x3077: case 0x307A: case 0x307D:
+		base = cp - 2; mark = 0x309A; return true;
+	/* Irregular precompositions (base is not simply cp-1) */
+	case 0x30F4: base = 0x30A6; mark = 0x3099; return true; /* ヴ */
+	case 0x30F7: base = 0x30EF; mark = 0x3099; return true; /* ヷ */
+	case 0x30F8: base = 0x30F0; mark = 0x3099; return true; /* ヸ */
+	case 0x30F9: base = 0x30F1; mark = 0x3099; return true; /* ヹ */
+	case 0x30FA: base = 0x30F2; mark = 0x3099; return true; /* ヺ */
+	case 0x3094: base = 0x3046; mark = 0x3099; return true; /* ゔ */
+	default:
+		return false;
+	}
+}
+
+/* Return the NFD-canonicalised form of a UTF-8 string (precomposed voiced/semi-voiced kana
+ * decomposed into base + combining mark). Invalid/other bytes are copied through verbatim. */
+static std::string toKanaNFD(const char *s)
+{
+	std::string out;
+	while (*s) {
+		unsigned char c = (unsigned char)*s;
+		int n;
+		uint32_t cp;
+		if (c < 0x80)             { out += (char)c; s += 1; continue; }
+		else if ((c & 0xE0) == 0xC0) { n = 2; cp = c & 0x1F; }
+		else if ((c & 0xF0) == 0xE0) { n = 3; cp = c & 0x0F; }
+		else if ((c & 0xF8) == 0xF0) { n = 4; cp = c & 0x07; }
+		else                      { out += (char)c; s += 1; continue; }
+
+		bool ok = true;
+		for (int i = 1; i < n; i++) {
+			if ((s[i] & 0xC0) != 0x80) { ok = false; break; }
+			cp = (cp << 6) | (s[i] & 0x3F);
+		}
+		if (!ok) { out += (char)c; s += 1; continue; }
+
+		uint32_t base, mark;
+		if (decomposeKana(cp, base, mark)) {
+			appendUTF8(out, base);
+			appendUTF8(out, mark);
+		} else {
+			for (int i = 0; i < n; i++)
+				out += s[i];
+		}
+		s += n;
+	}
+	return out;
+}
+
 static PHYSFS_EnumerateCallbackResult
 openReadEnumCB(void *d, const char *dirpath, const char *filename)
 {
@@ -591,8 +693,15 @@ openReadEnumCB(void *d, const char *dirpath, const char *filename)
 	if (data.stopSearching)
 		return PHYSFS_ENUM_STOP;
 
+	/* WEB PORT: compare against the NFD-canonicalised enumerated name so a request whose kana
+	 * are precomposed (NFC) still matches an on-disk macOS-NFD filename. data.filename was
+	 * already NFD-canonicalised in openRead(). See toKanaNFD above. The real (un-normalised)
+	 * `filename` is still what we open below. */
+	std::string enumNFD = toKanaNFD(filename);
+	const char *cmpName = enumNFD.c_str();
+
 	/* If there's not even a partial match, continue searching */
-	if (strncmp(filename, data.filename, data.filenameN) != 0)
+	if (strncmp(cmpName, data.filename, data.filenameN) != 0)
 		return PHYSFS_ENUM_OK;
 
 	if (!*dirpath)
@@ -605,7 +714,7 @@ openReadEnumCB(void *d, const char *dirpath, const char *filename)
 		fullPath = buffer;
 	}
 
-	char last = filename[data.filenameN];
+	char last = cmpName[data.filenameN];
 
 	/* If fname matches up to a following '.' (meaning the rest is part
 	 * of the extension), or up to a following '\0' (full match), we've
@@ -671,7 +780,12 @@ void FileSystem::openRead(OpenHandler &handler, const char *filename)
 		dir = buffer;
 	}
 
-	OpenReadEnumData data(handler, file, len + buffer - delim - !root,
+	/* WEB PORT: canonicalise the requested name to NFD so precomposed (NFC) kana in the game's
+	 * Marshal'd data match macOS-NFD on-disk filenames (see toKanaNFD / openReadEnumCB). The
+	 * enumerated names are NFD-canonicalised the same way, so both sides compare byte-for-byte.
+	 * fileNFD must outlive the synchronous enumeration below (data holds a pointer into it). */
+	std::string fileNFD = toKanaNFD(file);
+	OpenReadEnumData data(handler, fileNFD.c_str(), fileNFD.size(),
 	                      p->havePathCache ? &p->pathCache : 0);
 
 	if (p->havePathCache)

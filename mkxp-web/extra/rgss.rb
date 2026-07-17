@@ -1,4 +1,40 @@
 module RPG
+  # WEB PORT (VX): modern RGSS scripts (param add-on scripts etc.) reopen the item classes with a
+  # VXAce-style hierarchy — `class RPG::Armor < RPG::BaseItem`, `RPG::Skill <
+  # RPG::UsableItem`, etc. mruby 2.1.2 INFINITE-LOOPS on a superclass mismatch
+  # (instead of raising TypeError), so the shim MUST declare the same parents the
+  # game expects, or boot hangs the moment those classes are reopened. Define the
+  # base classes here and give Skill/Item/Weapon/Armor the matching superclass below.
+  class BaseItem;   end
+  class UsableItem < BaseItem
+    # RGSS2 skill/item shared attributes the XP-shaped shim below lacks. Marshal
+    # sets the @ivars from Data/Skills.rvdata etc.; these expose them so param add-on scripts
+    # that `alias ... base_damage` / read the damage formula at load don't crash.
+    attr_accessor :scope, :occasion, :animation_id, :base_damage, :variance,
+                  :atk_f, :spi_f, :physical_attack, :damage_to_mp, :absorb_damage,
+                  :ignore_defense, :element_set, :plus_state_set, :minus_state_set,
+                  :mp_cost, :hit, :speed, :hp_recovery, :mp_recovery,
+                  :hp_recovery_rate, :mp_recovery_rate, :parameter_type,
+                  :parameter_points, :common_event_id
+    # RGSS2 scope/occasion predicates. These live in the VX runtime's RPG::UsableItem
+    # (not the editable game scripts), so a game that strips them relies on the engine
+    # providing them. Absent here, every skill/item action crashed the battle at
+    # Game_BattleAction / the sideview battle system's target_decision. @scope 0-11, @occasion 0-3.
+    def for_opponent?;    [1, 2, 3, 4, 5, 6].include?(@scope);  end
+    def for_friend?;      [7, 8, 9, 10, 11].include?(@scope);   end
+    def for_dead_friend?; [9, 10].include?(@scope);             end
+    def for_user?;        @scope == 11;                         end
+    def for_one?;         [1, 3, 7, 9, 11].include?(@scope);    end
+    def for_two?;         @scope == 4;                          end
+    def for_three?;       @scope == 5;                          end
+    def for_random?;      [3, 4, 5].include?(@scope);           end
+    def dual?;            @scope == 6;                          end
+    def for_all?;         [2, 8, 10].include?(@scope);          end
+    def need_selection?;  [1, 7, 9].include?(@scope);           end
+    def battle_ok?;       [0, 1].include?(@occasion);           end
+    def menu_ok?;         [0, 2].include?(@occasion);           end
+  end
+
   module Cache
     @cache = {}
     def self.load_bitmap(folder_name, filename, hue = 0)
@@ -586,24 +622,40 @@ module RPG
       @tileset_id = 1
       @width = width
       @height = height
+      @scroll_type = 0          # VX
       @autoplay_bgm = false
       @bgm = RPG::AudioFile.new
       @autoplay_bgs = false
       @bgs = RPG::AudioFile.new("", 80)
+      @disable_dashing = false  # VX
       @encounter_list = []
       @encounter_step = 30
+      @parallax_name = ""       # VX
+      @parallax_loop_x = false  # VX
+      @parallax_loop_y = false  # VX
+      @parallax_sx = 0          # VX
+      @parallax_sy = 0          # VX
+      @parallax_show = false    # VX
       @data = Table.new(width, height, 3)
       @events = {}
     end
     attr_accessor :tileset_id
     attr_accessor :width
     attr_accessor :height
+    attr_accessor :scroll_type      # VX
     attr_accessor :autoplay_bgm
     attr_accessor :bgm
     attr_accessor :autoplay_bgs
     attr_accessor :bgs
+    attr_accessor :disable_dashing  # VX
     attr_accessor :encounter_list
     attr_accessor :encounter_step
+    attr_accessor :parallax_name     # VX
+    attr_accessor :parallax_loop_x   # VX
+    attr_accessor :parallax_loop_y   # VX
+    attr_accessor :parallax_sx       # VX
+    attr_accessor :parallax_sy       # VX
+    attr_accessor :parallax_show     # VX
     attr_accessor :data
     attr_accessor :events
   end
@@ -633,21 +685,29 @@ module RPG
           @switch2_valid = false
           @variable_valid = false
           @self_switch_valid = false
+          @item_valid = false        # VX
+          @actor_valid = false       # VX
           @switch1_id = 1
           @switch2_id = 1
           @variable_id = 1
           @variable_value = 0
           @self_switch_ch = "A"
+          @item_id = 1               # VX
+          @actor_id = 1              # VX
         end
         attr_accessor :switch1_valid
         attr_accessor :switch2_valid
         attr_accessor :variable_valid
         attr_accessor :self_switch_valid
+        attr_accessor :item_valid    # VX
+        attr_accessor :actor_valid   # VX
         attr_accessor :switch1_id
         attr_accessor :switch2_id
         attr_accessor :variable_id
         attr_accessor :variable_value
         attr_accessor :self_switch_ch
+        attr_accessor :item_id       # VX
+        attr_accessor :actor_id      # VX
       end
 
       class Graphic
@@ -655,6 +715,7 @@ module RPG
           @tile_id = 0
           @character_name = ""
           @character_hue = 0
+          @character_index = 0     # VX
           @direction = 2
           @pattern = 0
           @opacity = 255
@@ -663,6 +724,7 @@ module RPG
         attr_accessor :tile_id
         attr_accessor :character_name
         attr_accessor :character_hue
+        attr_accessor :character_index   # VX
         attr_accessor :direction
         attr_accessor :pattern
         attr_accessor :opacity
@@ -681,6 +743,7 @@ module RPG
         @direction_fix = false
         @through = false
         @always_on_top = false
+        @priority_type = 0       # VX (0 below / 1 same / 2 above)
         @trigger = 0
         @list = [RPG::EventCommand.new]
       end
@@ -695,6 +758,7 @@ module RPG
       attr_accessor :direction_fix
       attr_accessor :through
       attr_accessor :always_on_top
+      attr_accessor :priority_type   # VX
       attr_accessor :trigger
       attr_accessor :list
     end
@@ -728,10 +792,12 @@ module RPG
     def initialize
       @repeat = true
       @skippable = false
+      @wait = false        # VX (wait for move completion)
       @list = [RPG::MoveCommand.new]
     end
     attr_accessor :repeat
     attr_accessor :skippable
+    attr_accessor :wait      # VX
     attr_accessor :list
   end
 
@@ -757,6 +823,9 @@ module RPG
       @character_hue = 0
       @battler_name = ""
       @battler_hue = 0
+      @character_index = 0   # VX
+      @face_name = ""        # VX
+      @face_index = 0        # VX
       @parameters = Table.new(6,100)
       for i in 1..99
         @parameters[0,i] = 500+i*50
@@ -776,6 +845,12 @@ module RPG
       @armor2_fix = false
       @armor3_fix = false
       @armor4_fix = false
+      @two_swords_style = false  # VX
+      @fix_equipment = false     # VX
+      @auto_battle = false       # VX
+      @super_guard = false       # VX
+      @pharmacology = false      # VX
+      @critical_bonus = false    # VX (read every physical attack in Game_Actor#cri)
     end
     attr_accessor :id
     attr_accessor :name
@@ -786,6 +861,9 @@ module RPG
     attr_accessor :exp_inflation
     attr_accessor :character_name
     attr_accessor :character_hue
+    attr_accessor :character_index   # VX
+    attr_accessor :face_name         # VX
+    attr_accessor :face_index        # VX
     attr_accessor :battler_name
     attr_accessor :battler_hue
     attr_accessor :parameters
@@ -799,6 +877,12 @@ module RPG
     attr_accessor :armor2_fix
     attr_accessor :armor3_fix
     attr_accessor :armor4_fix
+    attr_accessor :two_swords_style  # VX
+    attr_accessor :fix_equipment     # VX
+    attr_accessor :auto_battle       # VX
+    attr_accessor :super_guard       # VX
+    attr_accessor :pharmacology      # VX
+    attr_accessor :critical_bonus    # VX
   end
 
   class Class
@@ -820,6 +904,8 @@ module RPG
       @element_ranks = Table.new(1)
       @state_ranks = Table.new(1)
       @learnings = []
+      @skill_name_valid = false   # VX: use a custom label for the "Skill" battle command?
+      @skill_name = ""            # VX: that custom label (read by Window_ActorCommand)
     end
     attr_accessor :id
     attr_accessor :name
@@ -829,9 +915,11 @@ module RPG
     attr_accessor :element_ranks
     attr_accessor :state_ranks
     attr_accessor :learnings
+    attr_accessor :skill_name_valid
+    attr_accessor :skill_name
   end
 
-  class Skill
+  class Skill < UsableItem
     def initialize
       @id = 0
       @name = ""
@@ -884,9 +972,19 @@ module RPG
     attr_accessor :element_set
     attr_accessor :plus_state_set
     attr_accessor :minus_state_set
+    # WEB PORT: this Skill class was declared XP-style (icon_name only), but the VX windows
+    # (Window_Base#draw_item_name -> draw_icon) read icon_index. The VX save/data carries
+    # @icon_index (as Weapon/Armor/State already expose), so the accessor was simply missing
+    # -> `undefined method 'icon_index'` -> the battle "Skill" command froze. Read it, default 0.
+    def icon_index; @icon_index || 0; end
+    # WEB PORT: VX skill battle-use messages. Scene_Battle does `name + skill.message1`
+    # and `skill.message2.empty?` when a skill is USED -> missing accessors would raise
+    # `undefined method 'message1'` and crash the skill action. Default "" (they call .empty?).
+    def message1; @message1 || ""; end
+    def message2; @message2 || ""; end
   end
 
-  class Item
+  class Item < UsableItem
     def initialize
       @id = 0
       @name = ""
@@ -939,9 +1037,12 @@ module RPG
     attr_accessor :element_set
     attr_accessor :plus_state_set
     attr_accessor :minus_state_set
+    # WEB PORT: same as Skill — the battle "Item" command's Window_Item#draw_item ->
+    # draw_item_name reads icon_index, absent on this XP-style Item class -> froze. Default 0.
+    def icon_index; @icon_index || 0; end
   end
 
-  class Weapon
+  class Weapon < BaseItem
     def initialize
       @id = 0
       @name = ""
@@ -960,6 +1061,22 @@ module RPG
       @element_set = []
       @plus_state_set = []
       @minus_state_set = []
+      # VX weapon fields (Marshal fills these from Weapons.rvdata; param add-on scripts
+      # read two_handed/fast_attack/etc. and the def/spi/agi params).
+      @icon_index = 0
+      @animation_id = 0
+      @two_handed = false
+      @fast_attack = false
+      @dual_attack = false
+      @critical_bonus = false
+      @def = 0
+      @spi = 0
+      @agi = 0
+      @hit = 95      # VX weapon hit% — WAS MISSING. Marshal fills @hit from Weapons.rvdata,
+                     # but with no reader, weapon.hit fell through to a note-tag stat add-on
+                     # (its #hit) = 0 for an empty note -> actor.hit = 0 -> 100% miss.
+      @auto_hp_recover = false   # VX (read on weapons by the equip-feature aggregator; no reader/module -> would crash)
+      @state_set = []
     end
     attr_accessor :id
     attr_accessor :name
@@ -978,9 +1095,21 @@ module RPG
     attr_accessor :element_set
     attr_accessor :plus_state_set
     attr_accessor :minus_state_set
+    attr_accessor :icon_index      # VX
+    attr_accessor :animation_id    # VX
+    attr_accessor :two_handed      # VX
+    attr_accessor :fast_attack     # VX
+    attr_accessor :dual_attack     # VX
+    attr_accessor :critical_bonus  # VX
+    attr_accessor :def             # VX
+    attr_accessor :spi             # VX
+    attr_accessor :agi             # VX
+    attr_accessor :hit             # VX  (was missing -> weapon.hit=0 -> all attacks missed)
+    attr_accessor :auto_hp_recover # VX  (read by the equip-feature aggregator; no reader/module -> crash)
+    attr_accessor :state_set       # VX
   end
 
-  class Armor
+  class Armor < BaseItem
     def initialize
       @id = 0
       @name = ""
@@ -998,6 +1127,18 @@ module RPG
       @int_plus = 0
       @guard_element_set = []
       @guard_state_set = []
+      # VX armor fields (Marshal fills these from Armors.rvdata).
+      @icon_index = 0
+      @atk = 0
+      @def = 0
+      @spi = 0
+      @agi = 0
+      @element_set = []
+      @state_set = []
+      @prevent_critical = false   # VX (were missing readers -> silent note-tag-only / crash)
+      @half_mp_cost = false        # VX
+      @double_exp_gain = false     # VX
+      @auto_hp_recover = false     # VX
     end
     attr_accessor :id
     attr_accessor :name
@@ -1015,9 +1156,31 @@ module RPG
     attr_accessor :int_plus
     attr_accessor :guard_element_set
     attr_accessor :guard_state_set
+    attr_accessor :icon_index    # VX
+    attr_accessor :atk           # VX
+    attr_accessor :def           # VX
+    attr_accessor :spi           # VX
+    attr_accessor :agi           # VX
+    attr_accessor :element_set   # VX
+    attr_accessor :state_set     # VX
+    # WEB PORT: VX armor feature flags (editor checkboxes, Marshal-filled). Missing readers made
+    # prevent_critical/half_mp_cost/double_exp_gain silently read only note-tags (a note-tag stat add-on aliases
+    # them, but the @ivar had no reader), and auto_hp_recover raise NoMethodError on the turn-end
+    # HP-regen check. Same class as weapon.hit. Expose all four.
+    attr_accessor :prevent_critical  # VX
+    attr_accessor :half_mp_cost      # VX
+    attr_accessor :double_exp_gain   # VX
+    attr_accessor :auto_hp_recover   # VX
   end
 
   class Enemy
+    # RGSS2 nested drop-item record (Marshal'd from Data/Enemies.rvdata).
+    class DropItem
+      # WEB PORT: some VX games Marshal a custom drop layout (@item_id/@weapon_id/@armor_id)
+      # instead of the stock @database_id; Game_Troop#make_drop_items reads those at victory.
+      attr_accessor :kind, :database_id, :denominator, :item_id, :weapon_id, :armor_id
+      def initialize; @kind = 0; @database_id = 1; @denominator = 1; @item_id = 0; @weapon_id = 0; @armor_id = 0; end
+    end
     class Action
       def initialize
         @kind = 0
@@ -1039,6 +1202,13 @@ module RPG
       attr_accessor :condition_level
       attr_accessor :condition_switch_id
       attr_accessor :rating
+      # WEB PORT (VX): VX enemy actions gate on condition_type + condition_param1/param2 (Marshal'd
+      # from Data/Enemies.rvdata), not the XP condition_turn_a/b/hp/level/switch_id above.
+      # Game_Enemy#conditions_met? reads them every time an enemy picks an
+      # action, so enemy turns would crash ("undefined method 'condition_type'") without these.
+      attr_accessor :condition_type
+      attr_accessor :condition_param1
+      attr_accessor :condition_param2
     end
 
     def initialize
@@ -1093,6 +1263,22 @@ module RPG
     attr_accessor :weapon_id
     attr_accessor :armor_id
     attr_accessor :treasure_prob
+    # WEB PORT (VX): the accessors above are XP-shaped (maxsp / pdef / mdef / item_id...), but the
+    # target is RPG Maker VX (RGSS2). Data/Enemies.rvdata Marshals VX-named enemy ivars — @maxmp,
+    # @def, @spi, @hit, @has_critical, @drop_item1/2 (verified in the data stream) — which have no
+    # reader here. Game_Enemy#base_maxmp/#base_def/#base_spi/#base_cri and the drop logic
+    # read them, so a battle raised "undefined method 'maxmp'" the instant an
+    # enemy was instantiated (Game_Enemy#initialize: `@mp = maxmp`), and def/spi/hit/crit/drops
+    # would crash later mid-battle. Marshal.load sets the ivars directly (bypassing initialize), so
+    # plain accessors over the loaded values are enough. (`:def` is a valid symbol; enemy.def works.)
+    attr_accessor :maxmp
+    attr_accessor :def
+    attr_accessor :spi
+    attr_accessor :hit
+    attr_accessor :has_critical
+    attr_accessor :drop_item1
+    attr_accessor :drop_item2
+    attr_accessor :levitate     # VX (floating flag; present in Enemies.rvdata, expose for completeness)
   end
 
   class Troop
@@ -1114,6 +1300,7 @@ module RPG
     class Page
       class Condition
         def initialize
+          @turn_ending = false       # VX: "turn end" trigger (was missing -> froze battle turn)
           @turn_valid = false
           @enemy_valid = false
           @actor_valid = false
@@ -1126,6 +1313,7 @@ module RPG
           @actor_hp = 50
           @switch_id = 1
         end
+        attr_accessor :turn_ending
         attr_accessor :turn_valid
         attr_accessor :enemy_valid
         attr_accessor :actor_valid
@@ -1153,7 +1341,10 @@ module RPG
       @id = 0
       @name = ""
       @members = []
-      @pages = [RPG::BattleEventPage.new]
+      # WEB PORT: was RPG::BattleEventPage (undefined -> NameError). VX's class is RPG::Troop::Page
+      # (defined above). Dormant today (Marshal.load bypasses initialize and nothing calls
+      # RPG::Troop.new), but fix the latent NameError.
+      @pages = [RPG::Troop::Page.new]
     end
     attr_accessor :id
     attr_accessor :name
@@ -1162,6 +1353,14 @@ module RPG
   end
 
   class State
+    # RGSS2 State param-rate attributes the XP-shaped body below lacks (Marshal fills
+    # the @ivars from Data/States.rvdata; param add-on scripts alias them at load).
+    attr_accessor :atk_rate, :def_rate, :spi_rate, :agi_rate, :maxhp_rate,
+                  :maxmp_rate, :hp_change_type, :hp_change_value, :hp_change_max,
+                  :mp_change_type, :mp_change_value, :mp_change_max, :priority,
+                  :reduce_hit_ratio, :offset_by_opposite, :nonresistance,
+                  :battle_only, :release_by_damage, :message1, :message2,
+                  :message3, :message4
     def initialize
       @id = 0
       @name = ""
@@ -1191,6 +1390,8 @@ module RPG
       @guard_element_set = []
       @plus_state_set = []
       @minus_state_set = []
+      @state_set = []
+      @icon_index = 0
     end
     attr_accessor :id
     attr_accessor :name
@@ -1220,6 +1421,16 @@ module RPG
     attr_accessor :guard_element_set
     attr_accessor :plus_state_set
     attr_accessor :minus_state_set
+    attr_accessor :icon_index              # VX: state icon (drawn by Window_Base#draw_actor_state)
+    attr_writer :state_set                 # VX: state-membership set (Marshal fills @state_set)
+    def state_set; @state_set || []; end   # defensive: nil when data omits it -> [] (avoids nil.include?)
+    # WEB PORT: a VX game's element_rate calls state.element_set /
+    # state.guard_state_set, but VX RPG::State Marshals neither (they're XP/custom fields). Provide
+    # readers that fall back to [] so `state.element_set.include?(id)` is a clean false, not a
+    # NoMethodError that freezes the first skill that resolves an element rate mid-battle.
+    attr_writer :element_set, :guard_state_set
+    def element_set; @element_set || []; end
+    def guard_state_set; @guard_state_set || []; end
   end
 
   class Animation
@@ -1263,6 +1474,16 @@ module RPG
     attr_accessor :name
     attr_accessor :animation_name
     attr_accessor :animation_hue
+    # WEB PORT (VX): the two accessors above are XP-shaped (a single animation graphic). The target
+    # is RPG Maker VX (RGSS2), whose RPG::Animation Marshals @animation1_name/@animation1_hue and
+    # @animation2_name/@animation2_hue instead (verified present in Data/Animations.rvdata; the XP
+    # @animation_name/@animation_hue are absent). Sprite_Base#load_animation_bitmap
+    # reads all four, so the first battle hit-animation raised
+    # "undefined method 'animation1_name'". Marshal.load sets the ivars directly, so readers suffice.
+    attr_accessor :animation1_name
+    attr_accessor :animation1_hue
+    attr_accessor :animation2_name
+    attr_accessor :animation2_hue
     attr_accessor :position
     attr_accessor :frame_max
     attr_accessor :frames
@@ -1693,3 +1914,336 @@ module Errno
     const_set(n, Class.new(SystemCallError)) unless const_defined?(n)
   end
 end
+
+#===========================================================
+# WEB PORT (VX): forgiving dispose on nil. RGSS2 Window#contents / many game
+# objects default to a disposable empty Bitmap; mkxp's WindowVX etc. default them
+# to nil, so the stock idioms `self.contents.dispose` (Window_Base#create_contents,
+# #dispose) and `sprite.bitmap.dispose` hit nil. RGSS scripts assume dispose/
+# disposed? are always safe to call, so make nil answer them (no-op / already-gone).
+#===========================================================
+class NilClass
+  def dispose; end
+  def disposed?; true; end
+  # WEB PORT (mruby compat): mruby's NilClass (deps/mruby/src/object.c:289-297) defines only
+  # & ^ | nil? to_s inspect. It OMITS the standard nil coercions to_i / to_f / to_a that CRuby and
+  # RGSS2's Ruby 1.8 both provide (nil.to_i => 0, nil.to_f => 0.0, nil.to_a => []). VX games
+  # lean on them pervasively — many `.to_i` / `.to_f` sites, often on values that can be nil
+  # (e.g. the sideview action machine's `@wait = active.to_i` when `@action.shift` yields nil).
+  # Without these, such a nil raises NoMethodError and
+  # freezes the frame. Restoring the standard coercions is safe: no code expects nil.to_i to raise.
+  def to_i; 0; end unless method_defined?(:to_i)
+  def to_f; 0.0; end unless method_defined?(:to_f)
+  def to_a; []; end unless method_defined?(:to_a)
+  # WEB PORT (defensive shim, NOT a Ruby 1.8 method): several battle/menu scripts call
+  # `.include?` on an attribute that is meant to be an array but can arrive nil — Marshal.load
+  # rebuilds RPG data objects without running initialize (so any array field the editor didn't
+  # serialize stays nil), and a few custom scripts (a choice UI: @choice_hide/@can_not_select,
+  # $game_party.group[var]) read arrays before they are set. On CRuby those happened to be
+  # populated; here a nil receiver raises NoMethodError and freezes the frame. Treating nil as an
+  # empty collection (contains nothing) is the correct, side-effect-free default at every site.
+  def include?(*); false; end unless method_defined?(:include?)
+end
+
+# WEB PORT (mruby compat): Ruby 1.8 / RGSS2 gave every object a deprecated #id, an alias of
+# object_id. Ruby 1.9 removed it and mruby ships only object_id / __id__. The sideview battle
+# system (Spriteset_Battle#update_actors) compares @actor_sprites[i].battler.id
+# against $game_party.members[i].id for every actor slot up to the sideview member cap (4). When the
+# party is smaller than 4 (e.g. early on), both sides are nil and the script
+# relies on nil.id being a harmless constant integer (4 in Ruby 1.8) so the "did the party
+# change?" check is simply false. On mruby nil.id is NoMethodError, which freezes the battle on
+# its first frame (during the "enemy appears" intro). Restore the 1.8 alias. Classes with their
+# own #id (Game_Actor, RPG::BaseItem, ...) override it; this only supplies the Object
+# fallback for nil / arrays / plain objects, and no code calls respond_to?(:id), so making #id
+# universally answerable is safe.
+class Object
+  def id; object_id; end unless method_defined?(:id)
+end
+
+# WEB PORT: RGSS2/VX Bitmap methods not exposed by this fork's XP-era Bitmap binding.
+# clear_rect(x,y,w,h) or clear_rect(rect) blanks a region — implement via fill_rect
+# with a transparent colour.
+# WEB PORT (VX): the engine's TilemapVX "bitmaps" proxy is wrapped via a data type
+# named "TilemapVXBitmapArray" (wrapObject does mrb_class_get on that name), but the
+# binding defines the class as "TilemapBitmaps". Alias the expected constant to the
+# real class so Tilemap.new can build its bitmaps proxy (with []/[]=) without a
+# recompile. Marshal/engine define TilemapBitmaps at binding-init, before scripts run.
+# NB: mruby 2.1.2 does not support the `defined?` operator (it parses as a method
+# call -> "undefined method 'defined?'"), so probe constants with const_defined?.
+if Object.const_defined?(:TilemapBitmaps) && !Object.const_defined?(:TilemapVXBitmapArray)
+  TilemapVXBitmapArray = TilemapBitmaps
+end
+
+# WEB PORT (VX): a VX game's Spriteset_Map feeds `@tilemap.passages = $game_map.passages`,
+# but mkxp's TilemapVX renders from `flags`/`map_data`, not `passages`. Accept and store
+# the value so the assignment doesn't raise; tile passability itself stays game-side on
+# $game_map. Guarded so a real binding (if ever added) wins.
+if Object.const_defined?(:Tilemap)
+  class Tilemap
+    def passages=(v); @passages = v; end unless method_defined?(:passages=)
+    def passages; @passages; end unless method_defined?(:passages)
+  end
+end
+
+# WEB PORT: mruby-marshal streams to/from an IO ONE BYTE AT A TIME, which froze the game
+# on BOTH sides of a savefile:
+#   * dump(obj, io): io_out::byte -> mrb_funcall(io,"write",<1 byte>). $game_map (~680 KB)
+#     is hundreds of thousands of write() funcalls+syscalls -> save hung (and hung outright
+#     when the slot file didn't exist yet -- the empty-slot freeze).
+#   * load(io): io_in::byte -> mrb_funcall(io,"getc") per byte, and mruby-io's buffered getc
+#     re-slices its read buffer on every call (O(bufsize) per byte) -> loading a save AND
+#     drawing the save-slot previews (Window_SaveFile reads 8 streams in initialize) hung
+#     the load screen / the save-select screen when saves already existed.
+# The in-memory String forms (string_out/string_in) do zero funcalls and are fast. So:
+#   * dump writes a 4-byte length prefix + the whole marshal buffer in one io.write.
+#   * load bulk-reads exactly that stream (one io.read) and loads it from the String.
+# Legacy un-prefixed saves are detected (their first 4 bytes are the marshal version 04 08,
+# i.e. an implausibly huge "length") and fall back to the native byte reader after
+# un-reading the header -- correct, just slow, so old saves still open.
+if Object.const_defined?(:Marshal) && Marshal.respond_to?(:dump) && !Marshal.respond_to?(:__mkxp_str_dump)
+  module Marshal
+    class << self
+      alias_method :__mkxp_str_dump, :dump
+      alias_method :__mkxp_str_load, :load
+      LP_MAX = 1 << 26   # 64 MB: above any real per-object stream, below 0x04080000 (~67 MB)
+
+      def dump(obj, io = nil, limit = nil)
+        return __mkxp_str_dump(obj)      if io.nil?          # Marshal.dump(obj)
+        return __mkxp_str_dump(obj, io)  if io.is_a?(Integer) # Marshal.dump(obj, limit)
+        s = __mkxp_str_dump(obj)                              # Marshal.dump(obj, io[, limit])
+        io.write([s.bytesize].pack("N"))
+        io.write(s)
+        io
+      end
+
+      def load(src)
+        return __mkxp_str_load(src) if src.is_a?(String)      # deep-copy path, unchanged
+        h = (src.read(4) rescue nil)
+        return __mkxp_str_load(src) unless h.is_a?(String) && h.bytesize == 4
+        n = h.unpack("N").first
+        return __mkxp_str_load(src.read(n)) if n && n >= 0 && n <= LP_MAX
+        (src.ungetc(h) rescue nil)                            # legacy stream: restore header
+        __mkxp_str_load(src)
+      end
+    end
+  end
+end
+
+# WEB PORT: mruby's 'default' gembox provides no Kernel#exit, yet the game calls exit
+# for Quit Game (Scene_Title) and on fatal guards (interpreter depth limit, missing
+# start map). A browser can't terminate the process, so raise a dedicated error that
+# unwinds cleanly to Main (117), which ends the scene loop instead of crashing with
+# "undefined method 'exit'".
+class MkxpExit < Exception; end unless Object.const_defined?(:MkxpExit)
+module Kernel
+  def exit(*);  raise MkxpExit; end
+  def exit!(*); raise MkxpExit; end
+end
+
+# WEB PORT: the game freezes (silent, no error) in the scene that follows a large Marshal
+# operation (save dump or load restore of ~680 KB $game_map). mruby's *generational* GC does
+# frequent minor collections keyed on an old->young write barrier; the marshal's huge
+# allocation burst appears to break that invariant, so a later collection loops. Switching to
+# plain (non-generational) incremental mark-sweep avoids it. Slightly more full-GC work, but
+# the game state is small enough that it's imperceptible.
+(GC.generational_mode = false) rescue nil
+
+# WEB PORT (mruby compat): RGSS2 targets Ruby 1.8, where Hash#index(value) returns the key for a
+# given value. Ruby 1.9 renamed it to Hash#key and 2.0 removed Hash#index entirely; mruby ships
+# only Hash#key. A script calls Hash#index on a hash
+# to map a value back to its key, so on mruby it raises
+# NoMethodError and freezes the instant that lookup runs. Restore the 1.8
+# alias. (Array#index exists in mruby, so array callers are unaffected.)
+class Hash
+  alias_method :index, :key unless method_defined?(:index)
+end
+
+class Bitmap
+  unless method_defined?(:clear_rect)
+    def clear_rect(x, y = nil, width = nil, height = nil)
+      if y.nil?
+        r = x; x = r.x; y = r.y; width = r.width; height = r.height
+      end
+      fill_rect(x, y, width, height, Color.new(0, 0, 0, 0))
+    end
+  end
+
+  # VX Bitmap effects that mkxp's RGSS1-era binding doesn't expose. blur/radial_blur
+  # are cosmetic (menu backgrounds are the snapshot); a no-op keeps them sharp but
+  # functional. gradient_fill_rect approximates the gradient with interpolated
+  # fill_rect strips (used for HP/MP gauges). Each is guarded so a real binding wins.
+  def blur; end unless method_defined?(:blur)
+  def radial_blur(angle, division); end unless method_defined?(:radial_blur)
+  def hue_change(hue); end unless method_defined?(:hue_change)
+  unless method_defined?(:gradient_fill_rect)
+    def gradient_fill_rect(*a)
+      if a[0].is_a?(Rect)
+        r = a[0]; x = r.x; y = r.y; w = r.width; h = r.height; c1 = a[1]; c2 = a[2]; vert = a[3]
+      else
+        x, y, w, h, c1, c2, vert = a
+      end
+      steps = (vert ? h : w).to_i
+      steps = 1 if steps < 1
+      lerp = lambda { |i| steps <= 1 ? 0.0 : i.to_f / (steps - 1) }
+      (0...steps).each do |i|
+        t = lerp.call(i)
+        col = Color.new(c1.red   + (c2.red   - c1.red)   * t,
+                        c1.green + (c2.green - c1.green) * t,
+                        c1.blue  + (c2.blue  - c1.blue)  * t,
+                        c1.alpha + (c2.alpha - c1.alpha) * t)
+        vert ? fill_rect(x, y + i, w, 1, col) : fill_rect(x + i, y, 1, h, col)
+      end
+    end
+  end
+
+  # RGSS Bitmap#draw_text coerces its text arg (games pass Integers and even nil,
+  # e.g. a Window_Command built with [nil,nil,nil] when the menu is drawn with
+  # sprites instead). mkxp's binding wants a String and raises "nil cannot be
+  # converted to String" — wrap it to coerce, matching RGSS.
+  alias __mkxp_draw_text draw_text
+  def draw_text(*a)
+    # NB: mkxp's draw_text picks the (rect,str) vs (x,y,w,h,str) form from the arg
+    # COUNT, so we must forward with explicit args — a splat (`*a`) makes argc -1 and
+    # sends it down the (x,y,w,h) path ("can't convert Rect to Integer").
+    case a.size
+    when 2 then __mkxp_draw_text(a[0], a[1].to_s)
+    when 3 then __mkxp_draw_text(a[0], a[1].to_s, a[2])
+    when 5 then __mkxp_draw_text(a[0], a[1], a[2], a[3], a[4].to_s)
+    when 6 then __mkxp_draw_text(a[0], a[1], a[2], a[3], a[4].to_s, a[5])
+    else        __mkxp_draw_text(*a)
+    end
+  end
+end
+
+# WEB PORT: Module reflection predicates RGSS plugins use at load-time (e.g.
+# `alias x y unless private_method_defined?(:x)`) that mruby's metaprog lacks.
+class Module
+  unless method_defined?(:private_method_defined?)
+    def private_method_defined?(n); (private_instance_methods(true) rescue []).include?(n.to_sym); end
+  end
+  unless method_defined?(:protected_method_defined?)
+    def protected_method_defined?(n); (protected_instance_methods(true) rescue []).include?(n.to_sym); end
+  end
+  unless method_defined?(:public_method_defined?)
+    def public_method_defined?(n); (public_instance_methods(true) rescue instance_methods(true) rescue []).include?(n.to_sym); end
+  end
+end
+
+#===========================================================
+# WEB PORT (VX): RGSS2 nested RPG data classes that Data/System.rvdata and
+# Data/Map*.rvdata reference via Marshal but that the (XP-shaped) shim above did
+# not declare. mruby-marshal only needs the class to EXIST — it restores the
+# instance variables regardless of the body — so empty classes are enough for
+# data the game never calls methods on (e.g. vehicles). Accessors can be added
+# later if a script actually reads one of these.
+#===========================================================
+module RPG
+  class System
+    unless const_defined?(:Vehicle, false)
+      class Vehicle
+        attr_accessor :character_name, :character_index, :bgm,
+                      :start_map_id, :start_x, :start_y
+        def initialize; @character_name = ""; @character_index = 0; @start_map_id = 0; @start_x = 0; @start_y = 0; end
+      end
+    end
+    # RGSS2 Terms holds ~30 UI label strings (skill, item, equip, hp, atk, ...).
+    # Rather than enumerate them all, expose whatever Marshal restored: a reader
+    # returns its @ivar (or "" if unset), a writer sets it. Safe because every
+    # Terms field is a display string.
+    unless const_defined?(:Terms, false)
+      class Terms
+        def method_missing(name, *args)
+          s = name.to_s
+          if s.end_with?('=')
+            instance_variable_set("@#{s.chomp('=')}", args[0])
+          else
+            iv = "@#{s}"
+            instance_variable_defined?(iv) ? instance_variable_get(iv) : ""
+          end
+        end
+        def respond_to_missing?(*); true; end
+      end
+    end
+    # RGSS2 RPG::System fields absent from the XP-shaped shim above. Marshal has
+    # already populated the @ivars from System.rvdata; these just expose them.
+    # (Re-declaring an accessor the shim already had is a harmless no-op.)
+    attr_accessor :game_title, :version_id, :party_members, :elements,
+                  :switches, :variables, :passages,
+                  :boat, :ship, :airship,
+                  :title_bgm, :battle_bgm, :battle_end_me, :gameover_me,
+                  :sounds, :test_battlers, :test_troop_id,
+                  :start_map_id, :start_x, :start_y,
+                  :terms, :battler_name, :battler_hue, :edit_map_id
+  end
+  class Map
+    class Encounter; end unless const_defined?(:Encounter, false)
+  end
+  # RGSS2: every database record carries a "note" box (the editor Note field), and
+  # param add-on scripts parse it heavily (<...> tags). The XP-shaped shim classes lack
+  # it, so mix a note reader/writer into each noted class. Marshal fills @note from
+  # the real data; we default to "" when the record has no note.
+  module Noted
+    def note; @note ||= ""; end
+    def note=(v); @note = v; end
+  end
+  class BaseItem; include Noted; end   # -> Skill/Item/Weapon/Armor/UsableItem
+  class Actor;    include Noted; end
+  class Class;    include Noted; end
+  class Enemy;    include Noted; end
+  class State;    include Noted; end
+  # RGSS2 audio-file subclasses (map BGM/BGS, system SE/ME, etc.). Subclass
+  # AudioFile so they inherit name/volume/pitch accessors used by the game.
+  AudioFile = Class.new unless const_defined?(:AudioFile, false)
+  # RGSS2 audio-file play/stop/fade. $data_system.title_bgm etc. are RPG::BGM after
+  # Marshal, and the game calls .play on them; give the subclasses the standard
+  # Audio.* routing (the base is a silent no-op so a bare AudioFile never crashes).
+  class AudioFile
+    def play(*); end
+  end
+  # RGSS2 also exposes RPG::BGM.last / RPG::BGS.last (the currently-playing track),
+  # used by save/restore and the BGM-resume plugin. mkxp doesn't provide these (the
+  # shim owns these classes), so track the last-played instance per class.
+  unless const_defined?(:BGM, false)
+    class BGM < AudioFile
+      def play(*)
+        n = @name.to_s
+        n.empty? ? Audio.bgm_stop : Audio.bgm_play("Audio/BGM/" + n, @volume || 100, @pitch || 100)
+        BGM.instance_variable_set(:@last, self)
+      end
+      def self.last; @last || new; end
+      def self.stop; @last = nil; Audio.bgm_stop; end
+      def self.fade(t); Audio.bgm_fade(t); end
+    end
+  end
+  unless const_defined?(:BGS, false)
+    class BGS < AudioFile
+      def play(*)
+        n = @name.to_s
+        n.empty? ? Audio.bgs_stop : Audio.bgs_play("Audio/BGS/" + n, @volume || 100, @pitch || 100)
+        BGS.instance_variable_set(:@last, self)
+      end
+      def self.last; @last || new; end
+      def self.stop; @last = nil; Audio.bgs_stop; end
+      def self.fade(t); Audio.bgs_fade(t); end
+    end
+  end
+  unless const_defined?(:ME, false)
+    class ME < AudioFile
+      def play(*)
+        n = @name.to_s
+        n.empty? ? Audio.me_stop : Audio.me_play("Audio/ME/" + n, @volume || 100, @pitch || 100)
+        ME.instance_variable_set(:@last, self)
+      end
+      def self.last; @last || new; end
+      def self.stop; @last = nil; Audio.me_stop; end
+      def self.fade(t); Audio.me_fade(t); end
+    end
+  end
+  unless const_defined?(:SE, false)
+    class SE < AudioFile
+      def play(*); n = @name.to_s; Audio.se_play("Audio/SE/" + n, @volume || 100, @pitch || 100) unless n.empty?; end
+      def self.stop; Audio.se_stop; end
+    end
+  end
+end
+

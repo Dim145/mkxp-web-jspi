@@ -193,9 +193,13 @@ void Config::read(int argc, char *argv[])
 	gameFolder = "game";
 	fixedFramerate = 40;
 	syncToRefreshrate = false;
-	rgssVersion = 1;
-	defScreenW = 640;
-	defScreenH = 480;
+	/* RGSS2 / RPG Maker VX build. This fork strips config-file and Game.ini parsing
+	 * (readGameINI never reads the ini), and the rgssVersion auto-detect there is gated
+	 * on `== 0`, so the version must be pinned here. Upstream/XP default was
+	 * rgssVersion=1 + 640x480; VX is 2 + 544x416. */
+	rgssVersion = 2;
+	defScreenW = 544;
+	defScreenH = 416;
 	/* WEB PORT: was `enableBlitting = false`, which made main.cpp null out
 	 * gl.BlitFramebuffer even when the context provides it. With a WebGL2
 	 * context (see main.cpp) native blits are available and MUCH faster than
@@ -286,7 +290,9 @@ void Config::readGameINI()
 	std::string iniFilename = execName + ".ini";
 	SDLRWStream iniFile(iniFilename.c_str(), "r");
 
-	game.scripts = "Data/Scripts.rxdata";
+	/* RGSS2 / VX: scripts live in Data/Scripts.rvdata. This fork does not parse Game.ini,
+	 * so the path is pinned here (XP used "Data/Scripts.rxdata"). */
+	game.scripts = "Data/Scripts.rvdata";
 	strReplace(game.scripts, '\\', '/');
 	game.title = "mkxp";
 

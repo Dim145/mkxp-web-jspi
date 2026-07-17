@@ -341,6 +341,7 @@ elseif(BINDING STREQUAL "MRUBY")
 		binding-mruby/binding-mruby.cpp
 		binding-mruby/binding-util.cpp
 		binding-mruby/window-binding.cpp
+		binding-mruby/windowvx-binding.cpp
 		binding-mruby/bitmap-binding.cpp
 		binding-mruby/sprite-binding.cpp
 		binding-mruby/font-binding.cpp
@@ -348,6 +349,7 @@ elseif(BINDING STREQUAL "MRUBY")
 		binding-mruby/plane-binding.cpp
 		binding-mruby/audio-binding.cpp
 		binding-mruby/tilemap-binding.cpp
+		binding-mruby/tilemapvx-binding.cpp
 		binding-mruby/etc-binding.cpp
 		binding-mruby/graphics-binding.cpp
 		binding-mruby/input-binding.cpp
@@ -456,7 +458,24 @@ target_link_libraries(${PROJECT_NAME}
 # the bitcode members it pulls) without the bitcode-libc breakage. emcc still runs
 # Binaryen wasm-opt at -O3 regardless. mkxp's own C++ is not the bottleneck (render
 # ~1.7ms/frame), so mkxp-internal / mkxp<->mruby cross-inlining is a negligible loss.
-SET(EMS_FLAGS " -s USE_SDL=2 -s USE_SDL_IMAGE=2 -s USE_ZLIB=1 -s USE_OGG=1 -s USE_VORBIS=1 -s USE_SDL_TTF=2 --std=c++14 -O3 -g0 -fwasm-exceptions -s SUPPORT_LONGJMP=wasm")
+# WEB PORT: debug-build toggle. Set env MKXP_WEB_DEBUG=1 (docker-build.sh --debug) to
+# compile a diagnostics engine that turns the silent native crashes into PRINTED faults:
+#   ASSERTIONS=2           -> runtime sanity checks + readable abort messages
+#   SAFE_HEAP=1            -> trap out-of-bounds / misaligned / null load+store AT the access
+#   STACK_OVERFLOW_CHECK=2 -> guard + named stack-overflow abort
+# plus -g2 for function names in stack traces. Keeps -O3 so the bug still reproduces.
+# Release (env unset) keeps ASSERTIONS=0 / SAFE_HEAP=0 / -g0 for size + speed.
+# NOTE: test the VALUE, not just DEFINED — docker-build.sh passes -e MKXP_WEB_DEBUG="" for a
+# release build, which *defines* the env var (empty), so DEFINED would wrongly pick debug.
+IF(NOT "$ENV{MKXP_WEB_DEBUG}" STREQUAL "")
+  MESSAGE(STATUS "*** MKXP_WEB_DEBUG: ASSERTIONS=2 SAFE_HEAP=1 STACK_OVERFLOW_CHECK=2 -g2 ***")
+  SET(WEB_G "-g2")
+  SET(WEB_SAFETY "-s ASSERTIONS=2 -s SAFE_HEAP=1 -s STACK_OVERFLOW_CHECK=2")
+ELSE()
+  SET(WEB_G "-g0")
+  SET(WEB_SAFETY "-s ASSERTIONS=0 -s SAFE_HEAP=0")
+ENDIF()
+SET(EMS_FLAGS " -s USE_SDL=2 -s USE_SDL_IMAGE=2 -s USE_ZLIB=1 -s USE_OGG=1 -s USE_VORBIS=1 -s USE_SDL_TTF=2 --std=c++14 -O3 ${WEB_G} -fwasm-exceptions -s SUPPORT_LONGJMP=wasm")
 # WEB PORT: JSPI (JavaScript Promise Integration) instead of ASYNCIFY. JSPI uses
 # native WebAssembly stack switching in the VM (Chrome 126+/148 here) instead of
 # Binaryen's whole-program code rewrite, removing ASYNCIFY's ~50% speed overhead.
@@ -464,11 +483,19 @@ SET(EMS_FLAGS " -s USE_SDL=2 -s USE_SDL_IMAGE=2 -s USE_ZLIB=1 -s USE_OGG=1 -s US
 # emscripten_sleep() (auto) and load_file_async_js (now EM_ASYNC_JS).
 # (Original: -s ASYNCIFY=1 -s ASYNCIFY_IMPORTS=["load_file_async_js"] -s ASYNCIFY_STACK_SIZE=1048576)
 SET(ASYNCIFY "-s JSPI")
+# WEB PORT: emscripten's default wasm stack dropped to 64KB in 3.1.27 (this pins 3.1.61).
+# That is far too small for the recursive RGSS/mruby interpreter + a sideview battle system's
+# action machine + the event interpreter, and JSPI keeps the WHOLE native call stack live across
+# every emscripten_sleep suspend. Deep chains (map transfer + autorun events + scene stack)
+# overflow 64KB -> with SAFE_HEAP=0 it silently smashes adjacent memory -> "random" native
+# freezes/crashes. Restore a generous 8MB stack (the old ASYNCIFY build reserved 1MB just for
+# its rewrite stack; native JSPI stacks go deeper). Cost: 8MB of the 256MB initial heap.
+SET(STACK_FLAGS "-s STACK_SIZE=8388608")
 SET(ERR_FLAGS " -Wno-undefined-var-template")
 
 SET(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} ${EMS_FLAGS} ${ERR_FLAGS} ${ASYNCIFY}")
 SET(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${EMS_FLAGS} ${ERR_FLAGS} ${ASYNCIFY}")
-SET(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} ${EMS_FLAGS} ${ASYNCIFY} -lopenal -s ASSERTIONS=0 -s GL_TRACK_ERRORS=0 -s SAFE_HEAP=0 -s MINIFY_HTML=0  --shell-file extra/shell.html -s EMULATE_FUNCTION_POINTER_CASTS=0 -s ALLOW_MEMORY_GROWTH=1 -s INITIAL_MEMORY=268435456 -s MAXIMUM_MEMORY=2147483648 -s MAX_WEBGL_VERSION=2 -s EXPORTED_FUNCTIONS='[\"_main\",\"_reloadBitmap\",\"_web_set_scancode\",\"_web_get_scancode\",\"_web_set_mouse\",\"_web_binding_count\"]' -s EXPORTED_RUNTIME_METHODS='[\"ccall\",\"cwrap\",\"addRunDependency\",\"removeRunDependency\"]'")
+SET(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} ${EMS_FLAGS} ${ASYNCIFY} ${STACK_FLAGS} -lopenal ${WEB_SAFETY} -s GL_TRACK_ERRORS=0 -s MINIFY_HTML=0 --shell-file extra/shell.html -s EMULATE_FUNCTION_POINTER_CASTS=0 -s ALLOW_MEMORY_GROWTH=1 -s INITIAL_MEMORY=268435456 -s MAXIMUM_MEMORY=2147483648 -s MAX_WEBGL_VERSION=2 -s EXPORTED_FUNCTIONS='[\"_main\",\"_reloadBitmap\",\"_web_set_scancode\",\"_web_get_scancode\",\"_web_set_mouse\",\"_web_binding_count\"]' -s EXPORTED_RUNTIME_METHODS='[\"ccall\",\"cwrap\",\"addRunDependency\",\"removeRunDependency\"]'")
 
 set_target_properties(
     ${PROJECT_NAME}

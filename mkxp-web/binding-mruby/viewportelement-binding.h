@@ -37,6 +37,34 @@ MRB_METHOD(viewportElementGetViewport)
 	return getProperty(mrb, self, CSviewport);
 }
 
+/* WEB PORT: bind the `viewport=` setter (object property, by reference, NIL allowed) -- mirrors
+ * the DEF_PROP_OBJ_REF macro but as a template so Sprite/Window/Plane all get it. Upstream mkxp's
+ * mruby binding only exposed the getter, so any script that reassigns a drawable's viewport at
+ * runtime (common in RGSS2/VX default menu and battle scenes) died with "undefined method
+ * 'viewport='". ViewportElement::setViewport re-parents the element to the new viewport's scene,
+ * so this is a real move, not just a stored reference. */
+template<class C>
+MRB_METHOD(viewportElementSetViewport)
+{
+	C *ve = getPrivateData<C>(mrb, self);
+
+	mrb_value viewportObj;
+	Viewport *viewport;
+
+	mrb_get_args(mrb, "o", &viewportObj);
+
+	if (mrb_nil_p(viewportObj))
+		viewport = 0;
+	else
+		viewport = getPrivateDataCheck<Viewport>(mrb, viewportObj, ViewportType);
+
+	GUARD_EXC( ve->setViewport(viewport); )
+
+	setProperty(mrb, self, CSviewport, viewportObj);
+
+	return viewportObj;
+}
+
 template<class C>
 static C *
 viewportElementInitialize(mrb_state *mrb, mrb_value self)
@@ -71,6 +99,7 @@ viewportElementBindingInit(mrb_state *mrb, RClass *klass)
 	sceneElementBindingInit<C>(mrb, klass);
 
 	mrb_define_method(mrb, klass, "viewport", viewportElementGetViewport<C>, MRB_ARGS_NONE());
+	mrb_define_method(mrb, klass, "viewport=", viewportElementSetViewport<C>, MRB_ARGS_REQ(1));
 }
 
 #endif // VIEWPORTELEMENTBINDING_H

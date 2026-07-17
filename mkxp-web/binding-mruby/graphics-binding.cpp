@@ -22,6 +22,8 @@
 #include "graphics.h"
 #include "sharedstate.h"
 #include "binding-util.h"
+#include "binding-types.h"
+#include "bitmap.h"
 #include "exception.h"
 
 MRB_FUNCTION(graphicsUpdate)
@@ -64,6 +66,68 @@ MRB_FUNCTION(graphicsFrameReset)
 	return mrb_nil_value();
 }
 
+/* WEB PORT (VX): RGSS2/VX Graphics methods absent from this XP-era binding.
+ * The C++ Graphics class (src/graphics.h) already implements them all. */
+MRB_FUNCTION(graphicsWidth)
+{
+	MRB_FUN_UNUSED_PARAM;
+	return mrb_fixnum_value(shState->graphics().width());
+}
+
+MRB_FUNCTION(graphicsHeight)
+{
+	MRB_FUN_UNUSED_PARAM;
+	return mrb_fixnum_value(shState->graphics().height());
+}
+
+MRB_FUNCTION(graphicsResizeScreen)
+{
+	mrb_int width, height;
+	mrb_get_args(mrb, "ii", &width, &height);
+	shState->graphics().resizeScreen(width, height);
+	return mrb_nil_value();
+}
+
+MRB_FUNCTION(graphicsWait)
+{
+	mrb_int duration;
+	mrb_get_args(mrb, "i", &duration);
+	GUARD_EXC( shState->graphics().wait(duration); )
+	return mrb_nil_value();
+}
+
+MRB_FUNCTION(graphicsFadeout)
+{
+	mrb_int duration;
+	mrb_get_args(mrb, "i", &duration);
+	GUARD_EXC( shState->graphics().fadeout(duration); )
+	return mrb_nil_value();
+}
+
+MRB_FUNCTION(graphicsFadein)
+{
+	mrb_int duration;
+	mrb_get_args(mrb, "i", &duration);
+	GUARD_EXC( shState->graphics().fadein(duration); )
+	return mrb_nil_value();
+}
+
+MRB_FUNCTION(graphicsSnapToBitmap)
+{
+	MRB_FUN_UNUSED_PARAM;
+	Bitmap *result = 0;
+	GUARD_EXC( result = shState->graphics().snapToBitmap(); )
+	return wrapObject(mrb, result, BitmapType);
+}
+
+MRB_FUNCTION(graphicsPlayMovie)
+{
+	const char *filename;
+	mrb_get_args(mrb, "z", &filename);
+	shState->graphics().playMovie(filename);
+	return mrb_nil_value();
+}
+
 #define DEF_GRA_PROP_I(PropName) \
 	MRB_FUNCTION(graphics##Get##PropName) \
 	{ \
@@ -94,6 +158,7 @@ MRB_FUNCTION(graphicsFrameReset)
 
 DEF_GRA_PROP_I(FrameRate)
 DEF_GRA_PROP_I(FrameCount)
+DEF_GRA_PROP_I(Brightness)
 
 DEF_GRA_PROP_B(Fullscreen)
 DEF_GRA_PROP_B(ShowCursor)
@@ -113,8 +178,19 @@ void graphicsBindingInit(mrb_state *mrb)
 	mrb_define_module_function(mrb, module, "transition", graphicsTransition, MRB_ARGS_OPT(3));
 	mrb_define_module_function(mrb, module, "frame_reset", graphicsFrameReset, MRB_ARGS_NONE());
 
+	/* WEB PORT (VX): RGSS2/VX Graphics API */
+	mrb_define_module_function(mrb, module, "width",         graphicsWidth,        MRB_ARGS_NONE());
+	mrb_define_module_function(mrb, module, "height",        graphicsHeight,       MRB_ARGS_NONE());
+	mrb_define_module_function(mrb, module, "resize_screen", graphicsResizeScreen, MRB_ARGS_REQ(2));
+	mrb_define_module_function(mrb, module, "wait",          graphicsWait,         MRB_ARGS_REQ(1));
+	mrb_define_module_function(mrb, module, "fadeout",       graphicsFadeout,      MRB_ARGS_REQ(1));
+	mrb_define_module_function(mrb, module, "fadein",        graphicsFadein,       MRB_ARGS_REQ(1));
+	mrb_define_module_function(mrb, module, "snap_to_bitmap", graphicsSnapToBitmap, MRB_ARGS_NONE());
+	mrb_define_module_function(mrb, module, "play_movie",    graphicsPlayMovie,    MRB_ARGS_REQ(1));
+
 	INIT_GRA_PROP_BIND( FrameRate,  "frame_rate"  );
 	INIT_GRA_PROP_BIND( FrameCount, "frame_count" );
+	INIT_GRA_PROP_BIND( Brightness, "brightness"  );
 
 	INIT_GRA_PROP_BIND( Fullscreen, "fullscreen"  );
 	INIT_GRA_PROP_BIND( ShowCursor, "show_cursor" );

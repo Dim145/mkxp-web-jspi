@@ -46,6 +46,8 @@ struct
 	SYMD(autotiles),
 	SYMD(map_data),
 	SYMD(flash_data),
+	SYMD(flags),
+	SYMD(bitmaps),
 	SYMD(priorities),
 	SYMD(windowskin),
 	SYMD(contents),

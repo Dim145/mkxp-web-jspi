@@ -61,6 +61,12 @@ static void mrbBindingExecute();
 static void mrbBindingTerminate();
 static void mrbBindingReset();
 
+/* WEB PORT: opt-in diagnostic — trace each RGSS script as it is evaluated at boot,
+ * so a script that blocks the load (a bitmap load or a loop at class-body scope) can
+ * be identified from the last line printed. Off by default; flip to true when porting
+ * a new game that hangs during boot. */
+static bool mkxpLoadTrace = false;
+
 ScriptBinding scriptBindingImpl =
 {
     mrbBindingExecute,
@@ -81,6 +87,9 @@ void planeBindingInit(mrb_state *);
 void viewportBindingInit(mrb_state *);
 void windowBindingInit(mrb_state *);
 void tilemapBindingInit(mrb_state *);
+/* WEB PORT (VX): RGSS2 renderers, selected below when rgssVer >= 2 */
+void windowVXBindingInit(mrb_state *);
+void tilemapVXBindingInit(mrb_state *);
 
 void inputBindingInit(mrb_state *);
 void audioBindingInit(mrb_state *);
@@ -168,8 +177,18 @@ static void mrbBindingInit(mrb_state *mrb)
 	spriteBindingInit(mrb);
 	planeBindingInit(mrb);
 	viewportBindingInit(mrb);
-	windowBindingInit(mrb);
-	tilemapBindingInit(mrb);
+	/* WEB PORT (VX): Window/Tilemap differ fundamentally between RGSS1 (XP) and
+	 * RGSS2/3 (VX/VX Ace). Bind the version-appropriate renderer as "Window"/"Tilemap". */
+	if (rgssVer >= 2)
+	{
+		windowVXBindingInit(mrb);
+		tilemapVXBindingInit(mrb);
+	}
+	else
+	{
+		windowBindingInit(mrb);
+		tilemapBindingInit(mrb);
+	}
 
 	/* Init RGSS modules */
 	inputBindingInit(mrb);
@@ -484,6 +503,16 @@ runRMXPScripts(mrb_state *mrb, mrbc_context *ctx)
 		ctx->filename = RSTRING_PTR(scriptName);
 		ctx->lineno = 1;
 
+		/* WEB PORT (debug): trace each script as it is evaluated, flushed to stderr.
+		 * If the game hangs during boot (a script that blocks the load — e.g. a bitmap
+		 * load or a loop at class-body scope), the LAST line printed names the culprit.
+		 * Guarded by an env-ish global so it can be silenced later. */
+		if (mkxpLoadTrace)
+		{
+			fprintf(stderr, "[loadscript %03d] %s\n", i, RSTRING_PTR(scriptName));
+			fflush(stderr);
+		}
+
 		int ai = mrb_gc_arena_save(mrb);
 
 		/* Execute code */
@@ -492,7 +521,13 @@ runRMXPScripts(mrb_state *mrb, mrbc_context *ctx)
 		mrb_gc_arena_restore(mrb, ai);
 
 		if (mrb->exc) {
-			printf("%s - err\n", ctx->filename);
+			/* WEB PORT: surface WHICH script failed and the exception, flushed to
+			 * stderr so it reaches the browser console before the RGSS thread ends. */
+			fprintf(stderr, "\n=== SCRIPT LOAD ERROR in '%s' ===\n", ctx->filename);
+			mrb_value bt = mrb_funcall(mrb, mrb_obj_value(mrb->exc), "inspect", 0);
+			if (mrb_string_p(bt))
+				fprintf(stderr, "%s\n", RSTRING_PTR(bt));
+			fflush(stderr);
 			return;
 		}
 	}

@@ -627,7 +627,13 @@ void EventThread::requestShowCursor(bool mode)
 void EventThread::showMessageBox(const char *body, int flags)
 {
 	msgBoxDone.clear();
-	printf("Message: %s", body);
+	/* WEB PORT: stdout is line-buffered and only flushes on '\n'; the original
+	 * printf had no newline, so RGSS script-error message boxes never reached the
+	 * browser console (silent shutdown). Emit to stderr with a newline + explicit
+	 * flush so every script exception is visible. */
+	fprintf(stderr, "\n=== RGSS MESSAGE BOX ===\n%s\n========================\n", body);
+	fflush(stderr);
+	fflush(stdout);
 	/* Prevent endless loops */
 	resetInputStates();
 }

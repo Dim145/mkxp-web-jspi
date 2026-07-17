@@ -187,7 +187,7 @@ function preloadList(jsonArray) {
 window.fileLoadedAsync = function(file) {
     document.title = wTitle;
 
-    if (!(/.*Map.*rxdata/i.test(file))) return;
+    if (!(/.*Map.*r[xv]data/i.test(file))) return;
 
     // WEB PORT: preload/*.json is an OPTIONAL per-map prefetch list; tolerate
     // its absence instead of spamming uncaught JSON.parse rejections on 404s.
