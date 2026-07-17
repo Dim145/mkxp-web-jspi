@@ -1,5 +1,5 @@
 #!/bin/bash
-# import-game.sh — bring your own RPG Maker XP (RGSS1) game into the web build.
+# import-game.sh — bring your own RPG Maker XP (RGSS1) or VX (RGSS2) game into the web build.
 #
 # The engine WASM (mkxp.wasm) is game-agnostic and does NOT need rebuilding for a new
 # game — this script just processes your game's files into build/gameasync/ and
@@ -14,9 +14,10 @@
 #
 # <namespace> is the IndexedDB save-key prefix (keep it unique per game).
 #
-# AFTER this runs, a stock/lightly-scripted RGSS1 game usually boots as-is. Heavily
-# scripted games (e.g. Pokémon Essentials) need their Ruby ported to mruby first —
-# see docs/PORTING-mruby.md. Scripts.rxdata is extracted to scripts_src/ for that.
+# AFTER this runs, a stock/lightly-scripted game usually boots as-is. Heavily scripted
+# games (e.g. Pokémon Essentials) need their Ruby ported to mruby first — see
+# docs/PORTING-mruby.md. Scripts.r{x,v}data is extracted to scripts_src/ for that.
+# VX (RGSS2): also set the RGSS version in src/config.cpp — see docs/RGSS2-VX.md.
 set -euo pipefail
 
 NAMESPACE="${1:-mygame}"
@@ -36,7 +37,7 @@ mkdir -p "$GA"
 rsync -a --exclude='*.exe' --exclude='*.dll' --exclude='*.swf' --exclude='*.lnk' \
         --exclude='*.ini.bak' --exclude='Thumbs.db' --exclude='.DS_Store' \
         "$GAME"/ "$GA"/
-[ -f "$GA/Game.ini" ] || echo "WARN: no Game.ini found — RMXP games need one (Scripts=Data/Scripts.rxdata)"
+[ -f "$GA/Game.ini" ] || echo "WARN: no Game.ini found — RGSS games ship one (Scripts=Data/Scripts.r{x,v}data)"
 
 echo ">>> [2/8] Converting audio to OGG (browsers can't play MIDI/WMA; MP3/WAV work but OGG is best)"
 if command -v ffmpeg >/dev/null; then
@@ -45,13 +46,18 @@ else
   echo "WARN: ffmpeg/timidity not installed — skipping audio conversion. MIDI (.mid) and WMA will be SILENT."
 fi
 
-echo ">>> [3/8] Extracting Scripts.rxdata -> scripts_src/ (edit these to port to mruby)"
-if [ -f "$GA/Data/Scripts.rxdata" ]; then
-  ruby "$REPO/../scripts_tool.rb" extract "$GA/Data/Scripts.rxdata" "$REPO/../scripts_src" 2>/dev/null \
-    || ruby /src/scripts_tool.rb extract "$GA/Data/Scripts.rxdata" /src/scripts_src \
-    || echo "WARN: could not extract Scripts.rxdata (adjust the path to scripts_tool.rb)"
+echo ">>> [3/8] Extracting Scripts.r{x,v}data -> scripts_src/ (edit these to port to mruby)"
+# XP Marshals Scripts.rxdata, VX Scripts.rvdata; the Marshal format is identical so
+# scripts_tool.rb handles either — pick whichever the game ships.
+SCRIPTS=""
+if   [ -f "$GA/Data/Scripts.rxdata" ]; then SCRIPTS="$GA/Data/Scripts.rxdata"
+elif [ -f "$GA/Data/Scripts.rvdata" ]; then SCRIPTS="$GA/Data/Scripts.rvdata"; fi
+if [ -n "$SCRIPTS" ]; then
+  ruby "$REPO/../scripts_tool.rb" extract "$SCRIPTS" "$REPO/../scripts_src" 2>/dev/null \
+    || ruby /src/scripts_tool.rb extract "$SCRIPTS" /src/scripts_src \
+    || echo "WARN: could not extract $(basename "$SCRIPTS") (adjust the path to scripts_tool.rb)"
 else
-  echo "WARN: no Data/Scripts.rxdata — cannot extract scripts"
+  echo "WARN: no Data/Scripts.r{x,v}data — cannot extract scripts"
 fi
 
 echo ">>> [4/8] Installing the generic mruby/RGSS compat shim (rgss.rb)"
@@ -78,6 +84,7 @@ Next:
   * Stock/lightly-scripted game: serve build/ (see docs/DEPLOY.md) and test in a browser.
   * Script-heavy game (Essentials-class): port scripts_src/*.rb to mruby (docs/PORTING-mruby.md),
     then repack:  ruby scripts_tool.rb pack scripts_src build/gameasync/Data/Scripts.rxdata
-    and bump the Scripts.rxdata ?h= hash in build/gameasync/mapping.js (or re-run regen-mapping.sh).
+                  (use Scripts.rvdata for VX)
+    and bump the Scripts.r?data ?h= hash in build/gameasync/mapping.js (or re-run regen-mapping.sh).
   * You only rebuild the engine (rebuild-*.sh) if you change the C++/mruby, not per game.
 DONE

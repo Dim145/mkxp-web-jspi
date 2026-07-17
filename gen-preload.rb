@@ -1,8 +1,9 @@
 #!/usr/bin/env ruby
-# Generate build/preload/Data/MapNNN.rxdata.json prefetch lists (the optional
+# Generate build/preload/Data/MapNNN.r{x,v}data.json prefetch lists (the optional
 # per-map asset prefetch system of mkxp-web; upstream generated these with
 # extra/dump.sh, one slow shell `find` per string — this does all maps in one
-# pass). For each Data/Map*.rxdata: Marshal-load it (with RGSS class stubs),
+# pass). For each Data/Map*.r{x,v}data (XP .rxdata / VX .rvdata): Marshal-load it
+# (with RGSS class stubs),
 # collect every String in the object graph, and keep those that resolve to an
 # existing game file ("<value>.*" matched by basename, like upstream, plus
 # path-relative matches). Output: JSON array of relative asset paths.
@@ -70,8 +71,8 @@ def walk(obj, strings, seen)
 end
 
 count = 0
-Dir.glob(File.join(GA, 'Data', 'Map*.rxdata')).sort.each do |path|
-  name = File.basename(path)                       # Map033.rxdata
+Dir.glob(File.join(GA, 'Data', 'Map*.r[xv]data')).sort.each do |path|   # .rxdata (XP) + .rvdata (VX)
+  name = File.basename(path)                       # Map033.rxdata / Map033.rvdata
   begin
     data = Marshal.load(File.binread(path))
   rescue => e
@@ -96,7 +97,7 @@ Dir.glob(File.join(GA, 'Data', 'Map*.rxdata')).sort.each do |path|
     next if base.empty?
     by_base[base].each { |f| assets << f } if by_base.key?(base)
   end
-  # keep only real asset types; drop rxdata self-references and scripts
+  # keep only real asset types; drop map-data self-references and scripts
   list = assets.select { |f| f =~ /\.(png|jpg|jpeg|gif|ogg|wav|mp3|mid|txt)$/i }.sort
 
   outdir = File.join(OUT, 'Data')
