@@ -75,7 +75,10 @@ the significant changes and the date they were made:
   Worker timers, keyboard + on-screen touch input (D-pad/buttons dispatch real
   `KeyboardEvent.code`; canvas taps/clicks drive the engine pointer via `web_set_mouse` for
   clickable menus / tap-to-move), fullscreen toggle, and dropping the WebGL context on
-  unload so a reload reclaims GPU memory promptly.
+  unload so a reload reclaims GPU memory promptly. Physical-keyboard input maps LETTER keys
+  by the character produced (`event.key`) rather than physical position (`event.code`), so a
+  binding to "A" works on AZERTY/QWERTZ/Dvorak (where the A-labeled key is not at the QWERTY-A
+  position); non-letters keep the `event.code` map.
 - `build/js/drive.js` — resilient on-demand asset loader: bounded retry on transient
   fetch failures then a graceful give-up (`callback(null)`) so a missing/failed asset can't
   hang the game; save-persist re-entrancy guard; cloud-restore-first (NAS) save loading.

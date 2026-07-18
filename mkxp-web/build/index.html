@@ -808,7 +808,21 @@
         return false;
       };
       function webKey(e, down){
-        var sc = SDL_SC[e.code];
+        // Map LETTER keys by the character they PRODUCE (event.key), not by physical
+        // position (event.code). event.code is the US-QWERTY position, so on AZERTY /
+        // QWERTZ / Dvorak the key LABELED "A" (physically KeyQ on AZERTY) would send Q.
+        // Using event.key means a game action bound to "A" responds to the A-labeled key on
+        // every layout. .toUpperCase() keeps keydown/keyup in sync across Shift changes.
+        // Non-letters (arrows, Enter, Space, Shift, F-keys, digits, punctuation) and the
+        // on-screen touch bridge (which sends key="KeyC"-style strings) fall through to the
+        // event.code map, unchanged.
+        var sc;
+        var k = e.key;
+        if (k && k.length === 1) {
+          var c = k.toUpperCase();
+          if (c >= 'A' && c <= 'Z') sc = SDL_SC['Key' + c];
+        }
+        if (sc === undefined) sc = SDL_SC[e.code];
         if (sc === undefined) return;
         if (window.webSetKey(sc, down) === true) { e.preventDefault(); }
       }
