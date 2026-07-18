@@ -114,6 +114,21 @@
     setTimeout(function () { fireKey('Escape', false); }, 140);
   }
 
+  // A touch on an overlay UI control (fullscreen button, save/download/install buttons, pad
+  // toggle, menu button) must NOT be hijacked as a game-area pointer: doing so preventDefault'd
+  // the button's synthetic click (so it never fired) AND sent a stray tap into the game. Detect
+  // those and let the tap flow to the DOM so the control's own handler runs.
+  function isUiElement(x, y) {
+    var el = document.elementFromPoint(x, y);
+    while (el && el !== document.body && el !== document.documentElement) {
+      var tag = el.tagName;
+      if (tag === 'BUTTON' || tag === 'A' || tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return true;
+      if (el.id === 'fullscreen' || el.id === 'padtoggle' || el.id === 'menubtn') return true;
+      el = el.parentElement;
+    }
+    return false;
+  }
+
   function onStart(e) {
     // Two-finger tap on the game area = cancel (B). Ignore when a control is under a finger
     // (the D-pad + A-button combo is also two touches, and must NOT cancel).
@@ -135,7 +150,7 @@
       if (id) {
         e.preventDefault();
         press(id, t.identifier);
-      } else if (mouseTid === null) {                // touch on the game area -> pointer
+      } else if (mouseTid === null && !isUiElement(t.clientX, t.clientY)) {  // game area -> pointer
         mouseTid = t.identifier;
         e.preventDefault();
         fireMouse('mousemove', t.clientX, t.clientY, 1);
