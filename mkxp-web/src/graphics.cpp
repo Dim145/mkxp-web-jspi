@@ -63,6 +63,32 @@
 #define DEF_SCREEN_H  (rgssVer == 1 ? 480 : 416)
 #define DEF_FRAMERATE (rgssVer == 1 ?  40 :  60)
 
+#ifdef __EMSCRIPTEN__
+/* WEB PORT (perf/pacing): yield the frame on requestAnimationFrame instead of a
+ * setTimeout-paced emscripten_sleep. Under JSPI, awaiting a Promise suspends the whole
+ * C+Ruby stack (exactly like emscripten_sleep) but resumes on the browser's compositor
+ * tick, so presentation is vsync-aligned -- smoother pacing, no tearing, and fewer wasted
+ * GPU wakeups on mobile. It awaits rAF until at least `ms` wall-time has elapsed (always at
+ * least one frame); the FPSLimiter's adaptive idealDiff compensation absorbs the rounding to
+ * whole refresh intervals, so a target framerate that doesn't divide the refresh rate still
+ * averages correctly by alternating vsync intervals. The `-3ms` slop avoids waiting an extra
+ * full frame for a sub-interval remainder.
+ *
+ * Hidden-tab guard: browsers pause requestAnimationFrame for a backgrounded tab, which would
+ * freeze the game. When document.hidden, fall back to setTimeout (which the shell reroutes
+ * through a Web Worker so it keeps firing while hidden), preserving the existing behaviour. */
+EM_ASYNC_JS(void, web_raf_delay, (double ms), {
+    const start = performance.now();
+    do {
+        if (document.hidden) {
+            await new Promise(function (r) { setTimeout(r, ms); });
+            break;
+        }
+        await new Promise(function (r) { requestAnimationFrame(r); });
+    } while (performance.now() - start < ms - 3);
+});
+#endif
+
 struct PingPong
 {
 	TEXFBO rt[2];
@@ -452,8 +478,21 @@ private:
 		 * run one frame per iteration in a single-threaded WASM build, without the
 		 * Ruby Fiber trick (which cannot yield across C function boundaries). */
 		uint64_t ms = ticks / tickFreqMS;
-		if (ms < 1) ms = 1;   /* always yield at least once per frame */
-		emscripten_sleep((unsigned int)ms);
+		if (ms >= 10)
+		{
+			/* Normal frame pacing -> vsync-aligned requestAnimationFrame yield (see
+			 * web_raf_delay). Smoother than the old setTimeout-paced emscripten_sleep,
+			 * which never aligned to the compositor. */
+			web_raf_delay((double)ms);
+		}
+		else
+		{
+			/* Small delay (catch-up / fast-forward): keep the timer path so FF and fast
+			 * catch-up frames aren't capped at the display refresh rate. emscripten_sleep
+			 * still unwinds the stack and yields to the browser. */
+			if (ms < 1) ms = 1;   /* always yield at least once per frame */
+			emscripten_sleep((unsigned int)ms);
+		}
 #elif defined(HAVE_NANOSLEEP)
 		struct timespec req;
 		uint64_t nsec = ticks / tickFreqNS;

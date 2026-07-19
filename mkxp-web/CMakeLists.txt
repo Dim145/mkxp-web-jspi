@@ -475,7 +475,10 @@ ELSE()
   SET(WEB_G "-g0")
   SET(WEB_SAFETY "-s ASSERTIONS=0 -s SAFE_HEAP=0")
 ENDIF()
-SET(EMS_FLAGS " -s USE_SDL=2 -s USE_SDL_IMAGE=2 -s USE_ZLIB=1 -s USE_OGG=1 -s USE_VORBIS=1 -s USE_SDL_TTF=2 --std=c++14 -O3 ${WEB_G} -fwasm-exceptions -s SUPPORT_LONGJMP=wasm")
+# WEB PORT (perf): -msimd128 lets LLVM/Binaryen autovectorize the scalar pixel loops at -O3
+# (hueChange, gradient fills, blends). Safe: JSPI already requires a very recent browser, where
+# WASM SIMD is universally supported.
+SET(EMS_FLAGS " -s USE_SDL=2 -s USE_SDL_IMAGE=2 -s USE_ZLIB=1 -s USE_OGG=1 -s USE_VORBIS=1 -s USE_SDL_TTF=2 --std=c++14 -O3 -msimd128 ${WEB_G} -fwasm-exceptions -s SUPPORT_LONGJMP=wasm")
 # WEB PORT: JSPI (JavaScript Promise Integration) instead of ASYNCIFY. JSPI uses
 # native WebAssembly stack switching in the VM (Chrome 126+/148 here) instead of
 # Binaryen's whole-program code rewrite, removing ASYNCIFY's ~50% speed overhead.
