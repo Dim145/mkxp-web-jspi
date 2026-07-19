@@ -46,6 +46,9 @@
 
 #ifdef __EMSCRIPTEN__
 #include "emscripten.hpp"
+#include <unordered_map>
+#include <list>
+#include <string>
 #endif
 
 #define GUARD_MEGA \
@@ -1024,6 +1027,70 @@ static void applyShadow(SDL_Surface *&in, const SDL_PixelFormat &fm, const SDL_C
 	in = out;
 }
 
+#ifdef __EMSCRIPTEN__
+/* WEB PORT (perf): cache rasterized text surfaces. TTF_RenderUTF8_Blended does a full CPU
+ * glyph rasterization + allocates a fresh SDL_Surface on EVERY drawText call -- even for an
+ * unchanged string (static labels, an unchanged HP number redrawn every frame across a
+ * clear()+draw_text cycle). Under mruby single-threaded WASM this dominates battle-HUD/menu
+ * frames. Cache the FINAL surface (post shadow + outline, ABGR8888), keyed by
+ * font+colors+flags+string, in a bounded LRU. The cached surface is only ever read (uploaded
+ * to a texture), never mutated, so sharing it across bitmaps/frames is safe; it is freed only
+ * on LRU eviction. */
+struct TxtCacheKey
+{
+	const void *font;
+	uint32_t fc, oc;
+	uint8_t flags;
+	std::string str;
+	bool operator==(const TxtCacheKey &o) const
+	{
+		return font == o.font && fc == o.fc && oc == o.oc && flags == o.flags && str == o.str;
+	}
+};
+struct TxtCacheKeyHash
+{
+	size_t operator()(const TxtCacheKey &k) const
+	{
+		size_t h = std::hash<std::string>()(k.str);
+		h ^= std::hash<const void*>()(k.font) + 0x9e3779b9 + (h << 6) + (h >> 2);
+		h ^= (size_t)k.fc * 2654435761u;
+		h ^= (size_t)k.oc * 40503u + ((size_t)k.flags << 3);
+		return h;
+	}
+};
+struct TxtCacheVal { SDL_Surface *surf; int rawH; };
+static const size_t TXT_CACHE_MAX = 96;
+static std::list<TxtCacheKey> s_txtLRU; /* front = most-recently-used */
+static std::unordered_map<TxtCacheKey,
+                          std::pair<TxtCacheVal, std::list<TxtCacheKey>::iterator>,
+                          TxtCacheKeyHash> s_txtCache;
+
+static SDL_Surface *txtCacheGet(const TxtCacheKey &k, int &rawH)
+{
+	auto it = s_txtCache.find(k);
+	if (it == s_txtCache.end())
+		return 0;
+	s_txtLRU.splice(s_txtLRU.begin(), s_txtLRU, it->second.second); /* touch -> front */
+	rawH = it->second.first.rawH;
+	return it->second.first.surf;
+}
+static void txtCachePut(const TxtCacheKey &k, SDL_Surface *surf, int rawH)
+{
+	s_txtLRU.push_front(k);
+	s_txtCache[k] = std::make_pair(TxtCacheVal{surf, rawH}, s_txtLRU.begin());
+	while (s_txtCache.size() > TXT_CACHE_MAX)
+	{
+		auto oit = s_txtCache.find(s_txtLRU.back());
+		if (oit != s_txtCache.end())
+		{
+			SDL_FreeSurface(oit->second.first.surf);
+			s_txtCache.erase(oit);
+		}
+		s_txtLRU.pop_back();
+	}
+}
+#endif
+
 void Bitmap::drawText(const IntRect &rect, const char *str, int align)
 {
 	guardDisposed();
@@ -1049,7 +1116,25 @@ void Bitmap::drawText(const IntRect &rect, const char *str, int align)
 	float txtAlpha = fontColor.norm.w;
 
 	SDL_Surface *txtSurf;
+	int rawTxtSurfH;
 
+#ifdef __EMSCRIPTEN__
+	/* Content-keyed cache lookup (see the LRU above). Key on the font (its ptr encodes
+	 * family/size/style), the fill+outline RGB, the shadow/outline/solid flags, and the
+	 * string. On a miss, rasterize (below) and store; on a hit, reuse the cached surface. */
+	SDL_Color _oc = outColor.toSDLColor();
+	TxtCacheKey ck;
+	ck.font = font;
+	ck.fc = ((uint32_t)c.r << 16) | ((uint32_t)c.g << 8) | (uint32_t)c.b;
+	ck.oc = ((uint32_t)_oc.r << 16) | ((uint32_t)_oc.g << 8) | (uint32_t)_oc.b;
+	ck.flags = (uint8_t)((p->font->getShadow() ? 1 : 0) |
+	                     (p->font->getOutline() ? 2 : 0) |
+	                     (shState->rtData().config.solidFonts ? 4 : 0));
+	ck.str = str;
+	txtSurf = txtCacheGet(ck, rawTxtSurfH);
+	if (!txtSurf)
+	{
+#endif
 	if (shState->rtData().config.solidFonts)
 		txtSurf = TTF_RenderUTF8_Solid(font, str, c);
 	else
@@ -1057,7 +1142,7 @@ void Bitmap::drawText(const IntRect &rect, const char *str, int align)
 
 	p->ensureFormat(txtSurf, SDL_PIXELFORMAT_ABGR8888);
 
-	int rawTxtSurfH = txtSurf->h;
+	rawTxtSurfH = txtSurf->h;
 
 	if (p->font->getShadow())
 		applyShadow(txtSurf, *p->format, c);
@@ -1086,6 +1171,10 @@ void Bitmap::drawText(const IntRect &rect, const char *str, int align)
 		/* reset outline to 0 */
 		TTF_SetFontOutline(font, 0);
 	}
+#ifdef __EMSCRIPTEN__
+	txtCachePut(ck, txtSurf, rawTxtSurfH);
+	}
+#endif
 
 	int alignX = rect.x;
 
@@ -1235,7 +1324,11 @@ void Bitmap::drawText(const IntRect &rect, const char *str, int align)
 		p->popViewport();
 	}
 
+#ifndef __EMSCRIPTEN__
 	SDL_FreeSurface(txtSurf);
+#endif
+	/* WEB PORT: on emscripten txtSurf is owned by the text-surface LRU cache (freed only on
+	 * eviction), so it must NOT be freed here. */
 	p->addTaintedArea(posRect);
 
 	p->onModified();
