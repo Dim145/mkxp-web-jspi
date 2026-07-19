@@ -66,9 +66,22 @@ struct GlobalIBO
 				buffer.push_back(i * 4 + indTemp[j]);
 		}
 
+		/* WEB PORT (perf/correctness): with the VAO-bind cache, vaoUnbind is a no-op so a VAO
+		 * may still be bound here. IBO::bind/unbind touch GL_ELEMENT_ARRAY_BUFFER, which a
+		 * bound VAO captures -- IBO::unbind() (bind 0) would zero that VAO's index buffer.
+		 * Preserve/restore the bound VAO around the element-buffer ops. Only runs when the
+		 * shared index buffer GROWS (rare, not per-frame), so the glGet stall is negligible. */
+		GLint prevVAO = 0;
+		gl.GetIntegerv(GL_VERTEX_ARRAY_BINDING, &prevVAO);
+		if (prevVAO != 0)
+			gl.BindVertexArray(0);
+
 		IBO::bind(ibo);
 		IBO::uploadData(buffer.size() * sizeof(index_t), dataPtr(buffer));
 		IBO::unbind();
+
+		if (prevVAO != 0)
+			gl.BindVertexArray((GLuint)prevVAO);
 	}
 };
 

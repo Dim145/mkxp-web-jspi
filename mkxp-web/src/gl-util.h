@@ -53,6 +53,13 @@ namespace TEX
 {
 	DEF_GL_ID
 
+	/* WEB PORT (perf): cache the GL_TEXTURE_2D binding on the active texture unit (always
+	 * unit 0 for TEX::bind -- Shader::setTexUniform uses non-zero units and restores unit 0),
+	 * so many sprites sharing one bitmap (a charset, the tile atlas, a windowskin) don't
+	 * re-issue BindTexture every draw. WebGL call marshalling is disproportionately costly on
+	 * mobile. Defined in gl-meta.cpp. Context loss reloads the page, so no reset is needed. */
+	extern GLuint boundTex;
+
 	inline ID gen()
 	{
 		ID id;
@@ -64,11 +71,16 @@ namespace TEX
 	static inline void del(ID id)
 	{
 		gl.DeleteTextures(1, &id.gl);
+		if (boundTex == id.gl)
+			boundTex = 0;   /* GL auto-unbinds a deleted bound texture to 0 */
 	}
 
 	static inline void bind(ID id)
 	{
+		if (boundTex == id.gl)
+			return;
 		gl.BindTexture(GL_TEXTURE_2D, id.gl);
+		boundTex = id.gl;
 	}
 
 	static inline void unbind()

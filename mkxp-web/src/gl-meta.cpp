@@ -25,8 +25,17 @@
 #include "glstate.h"
 #include "quad.h"
 
+/* WEB PORT (perf): definition of the TEX::bind texture-binding cache (declared in gl-util.h). */
+namespace TEX { GLuint boundTex = 0; }
+
 namespace GLMeta
 {
+
+/* WEB PORT (perf): cache the bound native VAO so consecutive draws (each with its own VAO)
+ * skip a redundant BindVertexArray, and vaoUnbind becomes a no-op (no BindVertexArray(0)
+ * between draws). GlobalIBO::ensureSize guards the element-buffer against this (it preserves/
+ * restores the bound VAO around its IBO ops). Context loss reloads the page, so no reset. */
+static GLuint s_boundVAO = 0;
 
 void subRectImageUpload(GLint srcW, GLint srcX, GLint srcY,
                         GLint dstX, GLint dstY, GLsizei dstW, GLsizei dstH,
@@ -90,6 +99,7 @@ void vaoInit(VAO &vao, bool keepBound)
 		vaoBindRes(vao);
 		if (!keepBound)
 			gl.BindVertexArray(0);
+		s_boundVAO = keepBound ? vao.nativeVAO : 0;   /* keep the cache in sync with the raw binds above */
 	}
 	else
 	{
@@ -110,7 +120,13 @@ void vaoFini(VAO &vao)
 void vaoBind(VAO &vao)
 {
 	if (HAVE_NATIVE_VAO)
-		gl.BindVertexArray(vao.nativeVAO);
+	{
+		if (s_boundVAO != vao.nativeVAO)   /* skip the redundant BindVertexArray */
+		{
+			gl.BindVertexArray(vao.nativeVAO);
+			s_boundVAO = vao.nativeVAO;
+		}
+	}
 	else
 		vaoBindRes(vao);
 }
@@ -119,7 +135,10 @@ void vaoUnbind(VAO &vao)
 {
 	if (HAVE_NATIVE_VAO)
 	{
-		gl.BindVertexArray(0);
+		/* WEB PORT (perf): no-op on the native path -- leave the VAO bound so the next
+		 * vaoBind (a different VAO) is a single BindVertexArray instead of unbind(0)+bind.
+		 * Nothing between draws touches VAO-captured state except GlobalIBO::ensureSize,
+		 * which preserves/restores the bound VAO around its element-buffer ops. */
 	}
 	else
 	{
